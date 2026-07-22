@@ -1,0 +1,5 @@
+python-telegram-bot==21.6
+requests
+pytz
+firebase-admin
+python-dotenv
