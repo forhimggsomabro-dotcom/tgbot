@@ -1,1624 +1,359 @@
 import asyncio
-import json
-import os
-import re
-import shutil
+import sqlite3
 import time
-from aiohttp import web
-from datetime import datetime
-from pathlib import Path
-from typing import Any
-
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.client.default import DefaultBotProperties
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.enums import ParseMode
 from aiogram.types import (
-    CallbackQuery,
-    FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
-    MessageEntity,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
 )
 
-# =========================================================
-# CONFIGURATION
-# =========================================================
+BOT_TOKEN = "YOUR_NEW_TOKEN_HERE"
 
-BOT_TOKEN = "8650482928:AAHH9Zxx_auExJy1sPA1Ifta5Sxyr7rAV4M"
 ADMIN_ID = 8133480591
+LOG_CHANNEL = "@PANKAZXX_SHOP"
+UPDATE_GROUP = "@lama_updates"
 
-# Public usernames such as "@mychannel", or numeric IDs such as -1001234567890.
-CHANNEL_ID: str | int = "@PANKAZXX_SHOP"
-GROUP_ID: str | int = "https://t.me/+IQ4_X5pUfXo1NzM1"
-
-# Optional stock announcement group.
-# Set to 0 to disable forwarding.
-STOCK_GROUP_ID: int = 0
-
-CHANNEL_LINK = "https://t.me/your_channel"
-GROUP_LINK = "https://t.me/your_group"
-SUPPORT_LINK = "https://t.me/PANKAZXX_support"
-
-DATABASE_FILE = "database.json"
-BACKUP_FILE = "database_backup.json"
-
-DEFAULT_REFERRAL_REWARD = 20
-DEFAULT_MIN_ACTIVE_REFERRALS = 1
-
-# =========================================================
-# PREMIUM EMOJI
-# =========================================================
-
-PREMIUM_STAR = "<tg-emoji emoji-id='5796185041717433060'>⭐</tg-emoji>"
-
-
-# =========================================================
-# DATABASE
-# =========================================================
-
-DEFAULT_DB = {
-    "users": {},
-    "products": {},
-    "orders": {},
-    "coupons": {},
-    "redeem_codes": {},
-    "premium_emojis": {},
-    "transactions": [],
-    "settings": {
-        "referral_reward": DEFAULT_REFERRAL_REWARD,
-        "min_active_referrals": DEFAULT_MIN_ACTIVE_REFERRALS,
-        "total_sales": 0,
-        "total_revenue": 0,
-        "maintenance": False,
-        "currency": "₹",
-    },
-}
-
-
-def deep_copy(value: Any) -> Any:
-    return json.loads(json.dumps(value))
-
-
-def load_database() -> dict:
-    if not os.path.exists(DATABASE_FILE):
-        return deep_copy(DEFAULT_DB)
-
-    try:
-        with open(DATABASE_FILE, "r", encoding="utf-8") as file:
-            loaded = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return deep_copy(DEFAULT_DB)
-
-    for key, default_value in DEFAULT_DB.items():
-        if key not in loaded:
-            loaded[key] = deep_copy(default_value)
-
-    for key, default_value in DEFAULT_DB["settings"].items():
-        loaded["settings"].setdefault(key, default_value)
-
-    return loaded
-
-
-db = load_database()
-db_lock = asyncio.Lock()
-
-
-async def save_database() -> None:
-    async with db_lock:
-        temporary = DATABASE_FILE + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as file:
-            json.dump(db, file, ensure_ascii=False, indent=2)
-        os.replace(temporary, DATABASE_FILE)
-
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
-
-
-def get_user(user_id: int | str) -> dict | None:
-    return db["users"].get(str(user_id))
-
-
-def ensure_user(from_user: types.User, referred_by: str | None = None) -> tuple[dict, bool]:
-    user_id = str(from_user.id)
-    existing = db["users"].get(user_id)
-
-    if existing:
-        existing["username"] = from_user.username or ""
-        existing["name"] = from_user.full_name
-        existing["last_seen"] = now_iso()
-        return existing, False
-
-    valid_referrer = None
-    if referred_by and referred_by.isdigit() and referred_by != user_id:
-        if referred_by in db["users"]:
-            valid_referrer = referred_by
-
-    user = {
-        "id": from_user.id,
-        "username": from_user.username or "",
-        "name": from_user.full_name,
-        "balance": 0,
-        "banned": False,
-        "verified": False,
-        "referred_by": valid_referrer,
-        "referrals": [],
-        "active_referrals": [],
-        "referral_rewarded": False,
-        "joined_at": now_iso(),
-        "last_seen": now_iso(),
-        "orders": [],
-        "used_coupons": [],
-        "used_codes": [],
-    }
-    db["users"][user_id] = user
-
-    if valid_referrer:
-        referrer = db["users"][valid_referrer]
-        if user_id not in referrer["referrals"]:
-            referrer["referrals"].append(user_id)
-
-    return user, True
-
-
-def add_transaction(user_id: int | str, amount: int, transaction_type: str, note: str) -> None:
-    db["transactions"].append(
-        {
-            "id": str(int(time.time() * 1000)),
-            "user_id": str(user_id),
-            "amount": amount,
-            "type": transaction_type,
-            "note": note,
-            "created_at": now_iso(),
-        }
-    )
-    if len(db["transactions"]) > 5000:
-        db["transactions"] = db["transactions"][-5000:]
-
-
-
-
-def build_custom_emoji_text(text: str):
-    entities = []
-
-    pattern = r"\{emoji:(.*?)\}"
-
-    for match in re.finditer(pattern, text):
-        name = match.group(1)
-        emoji_id = db.get("premium_emojis", {}).get(name)
-
-        if emoji_id:
-            entities.append(
-                MessageEntity(
-                    type="custom_emoji",
-                    offset=match.start(),
-                    length=2,
-                    custom_emoji_id=str(emoji_id),
-                )
-            )
-
-    clean_text = re.sub(pattern, "😺", text)
-    return clean_text, entities
-
-
-
-
-
-def build_tg_emoji_html(text: str):
-    """
-    Supports product text like:
-    <tg-emoji emoji-id='5796185041717433060'>⭐</tg-emoji> Product Name
-    """
-    entities = []
-    pattern = r"<tg-emoji\s+emoji-id=['\"](.*?)['\"]>(.*?)</tg-emoji>"
-
-    for match in re.finditer(pattern, text):
-        emoji_id = match.group(1)
-        emoji = match.group(2)
-
-        entities.append(
-            MessageEntity(
-                type="custom_emoji",
-                offset=match.start(),
-                length=len(emoji),
-                custom_emoji_id=str(emoji_id),
-            )
-        )
-
-    clean = re.sub(pattern, r"\2", text)
-    return clean, entities
-
-
-def get_product_emoji_entity(product: dict):
-    emoji_id = product.get("icon_custom_emoji_id")
-    if not emoji_id:
-        return []
-
-    return [
-        MessageEntity(
-            type="custom_emoji",
-            offset=0,
-            length=2,
-            custom_emoji_id=str(emoji_id)
-        )
-    ]
-
-
-
-
-def parse_tg_emoji_html(text: str):
-    """
-    Converts:
-    <tg-emoji emoji-id='123'>⭐</tg-emoji>
-    into Telegram custom emoji entities.
-    """
-    entities = []
-
-    pattern = r"<tg-emoji\s+emoji-id=['\"](.*?)['\"]>(.*?)</tg-emoji>"
-
-    for match in re.finditer(pattern, text):
-        emoji_id = match.group(1)
-        emoji = match.group(2)
-
-        entities.append(
-            MessageEntity(
-                type="custom_emoji",
-                offset=match.start(),
-                length=len(emoji),
-                custom_emoji_id=emoji_id
-            )
-        )
-
-    clean_text = re.sub(pattern, r"\2", text)
-    return clean_text, entities
-
-
-def currency_symbol() -> str:
-    return db.get("settings", {}).get("currency", "₹")
-
-# =========================================================
-# BOT INITIALIZATION
-# =========================================================
-
-if BOT_TOKEN == "PUT_YOUR_NEW_BOT_TOKEN_HERE":
-    print("WARNING: Add your new bot token to BOT_TOKEN before running.")
-
-bot = Bot(
-    BOT_TOKEN,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML
-    )
-)
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
+db = sqlite3.connect("lama_store.db")
+cur = db.cursor()
 
-# =========================================================
-# FSM STATES
-# =========================================================
+cur.executescript("""
+CREATE TABLE IF NOT EXISTS users(
+ id INTEGER PRIMARY KEY,
+ balance REAL DEFAULT 0,
+ refs INTEGER DEFAULT 0,
+ banned INTEGER DEFAULT 0
+);
 
-class AdminStates(StatesGroup):
-    waiting_broadcast = State()
-    waiting_user_lookup = State()
-    waiting_add_balance = State()
-    waiting_remove_balance = State()
-    waiting_ban_user = State()
-    waiting_unban_user = State()
+CREATE TABLE IF NOT EXISTS products(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT,
+ price REAL,
+ stock TEXT
+);
 
-    waiting_product_name = State()
-    waiting_product_price = State()
-    waiting_product_stock = State()
-    waiting_product_items = State()
-    waiting_delete_product = State()
-    waiting_edit_product = State()
+CREATE TABLE IF NOT EXISTS orders(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ user INTEGER,
+ product TEXT,
+ item TEXT,
+ time INTEGER
+);
 
-    waiting_coupon = State()
-    waiting_redeem_code = State()
-    waiting_referral_reward = State()
-    waiting_min_referrals = State()
-    waiting_restore_file = State()
+CREATE TABLE IF NOT EXISTS payments(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ user INTEGER,
+ amount REAL,
+ status TEXT
+);
 
+CREATE TABLE IF NOT EXISTS codes(
+ code TEXT PRIMARY KEY,
+ amount REAL
+);
+""")
 
-class UserStates(StatesGroup):
-    waiting_coupon = State()
-    waiting_redeem_code = State()
+db.commit()
 
+cooldown = {}
 
-# =========================================================
-# KEYBOARDS
-# =========================================================
-
-def cb(text: str, data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, callback_data=data)
-
-
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("🛍 Products", "user_products"), cb("💰 Wallet", "user_wallet")],
-            [cb("👥 Refer & Earn", "user_referral"), cb("📜 My Orders", "user_orders")],
-            [cb("🎟 Apply Coupon", "user_coupon"), cb("🎁 Redeem Code", "user_redeem")],
-            [InlineKeyboardButton(text="🆘 Support", url=SUPPORT_LINK)],
+def main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🛒 Products", callback_data="products"),
+            InlineKeyboardButton(text="👤 Profile", callback_data="profile")
+        ],
+        [
+            InlineKeyboardButton(text="🎁 Invite Centre", callback_data="invite"),
+            InlineKeyboardButton(text="💰 Top Up Balance", callback_data="topup")
+        ],
+        [
+            InlineKeyboardButton(text="🎟 Redeem Code", callback_data="redeem"),
+            InlineKeyboardButton(text="📜 Bot Policy", callback_data="policy")
+        ],
+        [
+            InlineKeyboardButton(text="🆘 Help", callback_data="help")
         ]
-    )
+    ])
+
+def admin_check(uid):
+    return uid == ADMIN_ID
 
 
-def force_join_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Join Channel", url=CHANNEL_LINK)],
-            [cb("✅ Verify Membership", "verify_join")],
-        ]
-    )
-
-
-def admin_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("📊 Dashboard", "admin_dashboard"), cb("👥 Users", "admin_users")],
-            [cb("📦 Products", "admin_products"), cb("💰 Balance", "admin_balance")],
-            [cb("📢 Broadcast", "admin_broadcast"), cb("🎟 Coupons", "admin_coupons")],
-            [cb("🎁 Redeem Codes", "admin_codes"), cb("😺 Premium Emojis", "admin_emojis")],
-            [cb("⚙ Settings", "admin_settings")],
-            [cb("💾 Backup", "admin_backup"), cb("♻ Restore", "admin_restore")],
-            [cb("🏠 User Menu", "back_main")],
-        ]
-    )
-
-
-def admin_users_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("🔎 Find User", "admin_find_user")],
-            [cb("🚫 Ban", "admin_ban"), cb("✅ Unban", "admin_unban")],
-            [cb("⬅ Back", "admin_home")],
-        ]
-    )
-
-
-def admin_balance_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("➕ Add Balance", "admin_add_balance")],
-            [cb("➖ Remove Balance", "admin_remove_balance")],
-            [cb("⬅ Back", "admin_home")],
-        ]
-    )
-
-
-def admin_products_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("➕ Add Product", "admin_add_product")],
-            [cb("✏ Edit Product", "admin_edit_product")],
-            [cb("🗑 Delete Product", "admin_delete_product")],
-            [cb("📋 View Products", "admin_view_products")],
-            [cb("⬅ Back", "admin_home")],
-        ]
-    )
-
-
-def admin_coupons_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("➕ Create Coupon", "admin_create_coupon")],
-            [cb("📋 View Coupons", "admin_view_coupons")],
-            [cb("⬅ Back", "admin_home")],
-        ]
-    )
-
-
-def admin_codes_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("➕ Create Redeem Code", "admin_create_code")],
-            [cb("📋 View Codes", "admin_view_codes")],
-            [cb("⬅ Back", "admin_home")],
-        ]
-    )
-
-
-def admin_settings_menu() -> InlineKeyboardMarkup:
-    status = "ON" if db["settings"]["maintenance"] else "OFF"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("💸 Referral Reward", "admin_ref_reward")],
-            [cb("👤 Minimum Active Referrals", "admin_min_refs")],
-            [cb(f"🛠 Maintenance: {status}", "admin_toggle_maintenance")],
-            [cb("⬅ Back", "admin_home")],
-        ]
-    )
-
-
-def back_main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[cb("⬅ Main Menu", "back_main")]])
-
-
-def back_admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[cb("⬅ Admin Panel", "admin_home")]])
-
-
-# =========================================================
-# MEMBERSHIP / ACCESS
-# =========================================================
-
-async def member_is_joined(chat_id: str | int, user_id: int) -> bool:
+async def log(text):
     try:
-        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        return member.status in {"member", "administrator", "creator", "restricted"}
-    except Exception:
-        return False
-
-
-async def verify_membership(user_id: int) -> bool:
-    return await member_is_joined(CHANNEL_ID, user_id)
-
-
-async def activate_referral(user_id: int) -> None:
-    user = get_user(user_id)
-    if not user:
-        return
-
-    referrer_id = user.get("referred_by")
-    if not referrer_id or user.get("referral_rewarded"):
-        return
-
-    referrer = get_user(referrer_id)
-    if not referrer:
-        return
-
-    uid = str(user_id)
-    if uid not in referrer["active_referrals"]:
-        referrer["active_referrals"].append(uid)
-
-    reward = int(db["settings"]["referral_reward"])
-    referrer["balance"] += reward
-    user["referral_rewarded"] = True
-    add_transaction(referrer_id, reward, "referral", f"Active referral reward for user {user_id}")
-
-    try:
-        await bot.send_message(
-            int(referrer_id),
-            f"🎉 Your referral became active!\n\n"
-            f"💰 {currency_symbol()}{reward} was added to your wallet.",
-        )
-    except Exception:
+        await bot.send_message(LOG_CHANNEL, text)
+    except:
         pass
 
 
-async def user_access_message(message: Message) -> bool:
-    user = get_user(message.from_user.id)
-    if user and user.get("banned"):
-        await message.answer("🚫 You are banned from using this bot.")
-        return False
-
-    if db["settings"]["maintenance"] and not is_admin(message.from_user.id):
-        await message.answer("🛠 The bot is currently under maintenance. Please try again later.")
-        return False
-
-    if not await verify_membership(message.from_user.id):
-        await message.answer(
-            "🔒 Join our channel to continue.",
-            reply_markup=force_join_menu(),
-        )
-        return False
-
-    if user and not user.get("verified"):
-        user["verified"] = True
-        await activate_referral(message.from_user.id)
-        await save_database()
-
-    return True
-
-
-
-
-async def send_product_with_custom_emoji(message, product_text, emoji_id):
-    entities = []
-
-    if emoji_id:
-        entities.append(
-            MessageEntity(
-                type="custom_emoji",
-                offset=0,
-                length=2,
-                custom_emoji_id=str(emoji_id)
-            )
-        )
-
-    await message.answer(
-        product_text,
-        entities=entities
-    )
-
-
-# =========================================================
-# USER COMMANDS
-# =========================================================
-
 @dp.message(Command("start"))
-async def command_start(message: Message) -> None:
-    referral = None
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) == 2:
-        referral = parts[1].strip()
+async def start(message: Message):
 
-    user, created = ensure_user(message.from_user, referral)
-    await save_database()
+    uid = message.from_user.id
 
-    if user.get("banned"):
-        await message.answer("🚫 You are banned from using this bot.")
-        return
-
-    if not await verify_membership(message.from_user.id):
-        await message.answer(
-            "✨ Welcome to PankazXX AI Store!\n\n"
-            "To unlock the bot, join the channel and then press Verify.",
-            reply_markup=force_join_menu(),
-        )
-        return
-
-    if not user.get("verified"):
-        user["verified"] = True
-        await activate_referral(message.from_user.id)
-        await save_database()
-
-    await message.answer(
-        f"{PREMIUM_STAR} <b>Welcome, {message.from_user.full_name}!</b>\n\n"
-        "🚀 Welcome to PankazXX AI Store\n\n"
-        "💎 Premium Digital Services\n"
-        "⚡ Fast Delivery\n"
-        "🔐 Secure & Reliable\n\n"
-        f"{PREMIUM_STAR} <b>Choose an option below:</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=main_menu(),
+    cur.execute(
+        "INSERT OR IGNORE INTO users(id) VALUES(?)",
+        (uid,)
     )
 
+    db.commit()
 
-@dp.callback_query(F.data == "verify_join")
-async def callback_verify_join(callback: CallbackQuery) -> None:
-    user, _ = ensure_user(callback.from_user)
-    if await verify_membership(callback.from_user.id):
-        if not user.get("verified"):
-            user["verified"] = True
-            await activate_referral(callback.from_user.id)
-            await save_database()
-        await callback.message.edit_text("✅ Membership verified successfully.", reply_markup=main_menu())
-    else:
-        await callback.answer("Join the channel first.", show_alert=True)
-
-
-@dp.callback_query(F.data == "back_main")
-async def callback_main_menu(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    if not await user_access_message(callback.message):
-        return
-    await callback.message.edit_text(
-        "🏠 Welcome back!\n\nChoose an option:",
+    await message.answer(
+        "📝 Welcome to Lama Bot!\n\n"
+        "I'm here to help you purchase subscriptions and digital services easily and securely.",
         reply_markup=main_menu()
     )
-    await callback.answer()
 
 
-@dp.callback_query(F.data == "user_wallet")
-async def callback_wallet(callback: CallbackQuery) -> None:
-    user = get_user(callback.from_user.id)
-    if not user:
-        return
-    await callback.message.edit_text(
-        f"💰 Wallet\n"
-        f"Available balance: {currency_symbol()}{user['balance']}\n"
-        f"Active referrals: {len(user['active_referrals'])}\n"
-        f"Total orders: {len(user['orders'])}",
-        reply_markup=back_main_keyboard(),
+@dp.callback_query(F.data == "profile")
+async def profile(call: CallbackQuery):
+
+    user = cur.execute(
+        "SELECT balance,refs FROM users WHERE id=?",
+        (call.from_user.id,)
+    ).fetchone()
+
+    await call.message.edit_text(
+        f"👤 Profile\n\n"
+        f"💰 Balance: ${user[0]:.2f}\n"
+        f"🎁 Referrals: {user[1]}",
+        reply_markup=main_menu()
     )
 
 
-@dp.callback_query(F.data == "user_referral")
-async def callback_referral(callback: CallbackQuery) -> None:
-    user = get_user(callback.from_user.id)
-    me = await bot.get_me()
-    link = f"https://t.me/{me.username}?start={callback.from_user.id}"
-    reward = db["settings"]["referral_reward"]
-    minimum = db["settings"]["min_active_referrals"]
+@dp.callback_query(F.data == "products")
+async def products(call: CallbackQuery):
 
-    await callback.message.edit_text(
-        f"👥 Refer & Earn\n\n"
-        f"Your link:\n{link}\n\n"
-        f"💸 Reward per active referral: {currency_symbol()}{reward}\n"
-        f"✅ Active referrals: {len(user['active_referrals'])}\n"
-        f"📌 Minimum active referrals required: {minimum}",
-        reply_markup=back_main_keyboard(),
-    )
+    rows = cur.execute(
+        "SELECT id,name,price FROM products"
+    ).fetchall()
 
+    buttons = []
 
-@dp.callback_query(F.data == "user_products")
-async def callback_products(callback: CallbackQuery) -> None:
-    if not db["products"]:
-        await callback.message.edit_text("📦 No products are available right now.", reply_markup=back_main_keyboard())
-        return
-
-    rows = []
-    for product_id, product in db["products"].items():
-        rows.append(
-            [
-                cb(
-                    f"🛒 {build_custom_emoji_text(product['name'])[0]} — {currency_symbol()}{product['price']} ({len(product['stock_items'])} left)",
-                    f"product:{product_id}",
-                )
-            ]
-        )
-    rows.append([cb("⬅ Main Menu", "back_main")])
-    await callback.message.edit_text("🛍 Products", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-
-
-@dp.callback_query(F.data.startswith("product:"))
-async def callback_product_details(callback: CallbackQuery) -> None:
-    product_id = callback.data.split(":", 1)[1]
-    product = db["products"].get(product_id)
-    if not product:
-        await callback.answer("Product not found.", show_alert=True)
-        return
-
-    stock_count = len(product["stock_items"])
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [cb("✅ Buy Now", f"buy:{product_id}")],
-            [cb("⬅ Products", "user_products")],
-        ]
-    )
-    product_name = product["name"]
-    clean_name, tg_entities = parse_tg_emoji_html(product_name)
-
-    entities = tg_entities
-    if product.get("icon_custom_emoji_id") and not entities:
-        entities.append(
-            MessageEntity(
-                type="custom_emoji",
-                offset=0,
-                length=1,
-                custom_emoji_id=str(product["icon_custom_emoji_id"])
+    for p in rows:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{p[1]} - ${p[2]}",
+                callback_data=f"buy:{p[0]}"
             )
-        )
+        ])
 
-    await callback.message.edit_text(
-        f"📦 {clean_name}\n\n"
-        f"📝 {product.get('description', 'Digital product')}\n"
-        f"💵 Price: {currency_symbol()}{product['price']}\n"
-        f"📊 Stock: {stock_count}",
-        entities=entities,
-        reply_markup=keyboard,
+    buttons.append([
+        InlineKeyboardButton(
+            text="⬅ Back",
+            callback_data="home"
+        )
+    ])
+
+    await call.message.edit_text(
+        "🛒 Available Products",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=buttons
+        )
     )
 
 
 @dp.callback_query(F.data.startswith("buy:"))
-async def callback_buy_product(callback: CallbackQuery) -> None:
-    user = get_user(callback.from_user.id)
-    if not user:
-        return
+async def buy(call: CallbackQuery):
 
-    product_id = callback.data.split(":", 1)[1]
-    product = db["products"].get(product_id)
+    if call.from_user.id in cooldown:
+        if time.time()-cooldown[call.from_user.id] < 3:
+            return
+
+    cooldown[call.from_user.id]=time.time()
+
+    pid=int(call.data.split(":")[1])
+
+    product=cur.execute(
+        "SELECT name,price,stock FROM products WHERE id=?",
+        (pid,)
+    ).fetchone()
 
     if not product:
-        await callback.answer("Product no longer exists.", show_alert=True)
         return
 
-    if not product["stock_items"]:
-        await callback.answer("This product is out of stock.", show_alert=True)
-        return
+    if product[2]=="":
+        return await call.answer("Out of stock")
 
-    price = int(product["price"])
-    if user["balance"] < price:
-        await callback.answer(
-            f"Insufficient balance. You need {currency_symbol()}{price}.",
-            show_alert=True,
-        )
-        return
+    balance=cur.execute(
+        "SELECT balance FROM users WHERE id=?",
+        (call.from_user.id,)
+    ).fetchone()[0]
 
-    stock_item = product["stock_items"].pop(0)
-    user["balance"] -= price
+    if balance < product[1]:
+        return await call.answer("Insufficient balance")
 
-    order_id = str(int(time.time() * 1000))
-    order = {
-        "id": order_id,
-        "user_id": str(callback.from_user.id),
-        "product_id": product_id,
-        "product_name": product["name"],
-        "price": price,
-        "delivered_item": stock_item,
-        "created_at": now_iso(),
-    }
-    db["orders"][order_id] = order
-    user["orders"].append(order_id)
-    db["settings"]["total_sales"] += 1
-    db["settings"]["total_revenue"] += price
-    add_transaction(callback.from_user.id, -price, "purchase", f"Purchased {product['name']}")
-    await save_database()
+    item=product[2].split("\n")[0]
+    remaining="\n".join(product[2].split("\n")[1:])
 
-    await callback.message.edit_text(
+    cur.execute(
+        "UPDATE users SET balance=balance-? WHERE id=?",
+        (product[1],call.from_user.id)
+    )
+
+    cur.execute(
+        "UPDATE products SET stock=? WHERE id=?",
+        (remaining,pid)
+    )
+
+    cur.execute(
+        "INSERT INTO orders(user,product,item,time) VALUES(?,?,?,?)",
+        (call.from_user.id,product[0],item,int(time.time()))
+    )
+
+    db.commit()
+
+    await call.message.answer(
         f"✅ Purchase Successful\n\n"
-        f"📦 Product: {product['name']}\n"
-        f"💵 Paid: {currency_symbol()}{price}\n\n"
-        f"🔐 Your delivery:\n<code>{stock_item}</code>\n\n"
-        "Keep this information private.",
-        parse_mode="HTML",
-        reply_markup=back_main_keyboard(),
+        f"📦 {product[0]}\n\n"
+        f"🔐 Your Details:\n{item}"
     )
 
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"🛒 New Order\n\n"
-            f"Order: {order_id}\n"
-            f"User: {callback.from_user.id}\n"
-            f"Product: {product['name']}\n"
-            f"Amount: {currency_symbol()}{price}",
-        )
-    except Exception:
-        pass
-
-
-@dp.callback_query(F.data == "user_orders")
-async def callback_orders(callback: CallbackQuery) -> None:
-    user = get_user(callback.from_user.id)
-    order_ids = user.get("orders", [])[-10:]
-
-    if not order_ids:
-        await callback.message.edit_text("📜 You have no orders yet.", reply_markup=back_main_keyboard())
-        return
-
-    lines = ["📜 Orders\n"]
-    for order_id in reversed(order_ids):
-        order = db["orders"].get(order_id)
-        if order:
-            lines.append(
-                f"• {order['product_name']} — {currency_symbol()}{order['price']}\n"
-                f"  ID: {order_id}\n"
-                f"  Date: {order['created_at']}"
-            )
-    await callback.message.edit_text("\n\n".join(lines), reply_markup=back_main_keyboard())
-
-
-@dp.callback_query(F.data == "user_coupon")
-async def callback_user_coupon(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(UserStates.waiting_coupon)
-    await callback.message.edit_text("🎟 Send the coupon code.")
-
-
-@dp.message(UserStates.waiting_coupon)
-async def process_user_coupon(message: Message, state: FSMContext) -> None:
-    user = get_user(message.from_user.id)
-    code = (message.text or "").strip().upper()
-    coupon = db["coupons"].get(code)
-
-    if not coupon or not coupon.get("active", True):
-        await message.answer("❌ Invalid or inactive coupon.")
-        await state.clear()
-        return
-
-    if code in user["used_coupons"]:
-        await message.answer("❌ You have already used this coupon.")
-        await state.clear()
-        return
-
-    uses_left = int(coupon.get("uses_left", 0))
-    if uses_left <= 0:
-        await message.answer("❌ This coupon has reached its usage limit.")
-        await state.clear()
-        return
-
-    amount = int(coupon["amount"])
-    user["balance"] += amount
-    user["used_coupons"].append(code)
-    coupon["uses_left"] -= 1
-    add_transaction(message.from_user.id, amount, "coupon", f"Coupon {code}")
-    await save_database()
-    await state.clear()
-
-    await message.answer(f"✅ Coupon applied. {currency_symbol()}{amount} added to your wallet.", reply_markup=main_menu())
-
-
-@dp.callback_query(F.data == "user_redeem")
-async def callback_user_redeem(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(UserStates.waiting_redeem_code)
-    await callback.message.edit_text("🎁 Send your redeem code.")
-
-
-@dp.message(UserStates.waiting_redeem_code)
-async def process_user_redeem(message: Message, state: FSMContext) -> None:
-    user = get_user(message.from_user.id)
-    code = (message.text or "").strip().upper()
-    redeem = db["redeem_codes"].get(code)
-
-    if not redeem or not redeem.get("active", True):
-        await message.answer("❌ Invalid or inactive redeem code.")
-        await state.clear()
-        return
-
-    if code in user["used_codes"]:
-        await message.answer("❌ You have already used this code.")
-        await state.clear()
-        return
-
-    uses_left = int(redeem.get("uses_left", 0))
-    if uses_left <= 0:
-        await message.answer("❌ This redeem code has reached its limit.")
-        await state.clear()
-        return
-
-    amount = int(redeem["amount"])
-    user["balance"] += amount
-    user["used_codes"].append(code)
-    redeem["uses_left"] -= 1
-    add_transaction(message.from_user.id, amount, "redeem", f"Redeem code {code}")
-    await save_database()
-    await state.clear()
-
-    await message.answer(f"✅ Code redeemed. {currency_symbol()}{amount} added to your wallet.", reply_markup=main_menu())
-
-
-# =========================================================
-# ADMIN PANEL
-# =========================================================
-
-
-@dp.message(Command("currency"))
-async def change_currency(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Usage: /currency ₹")
-        return
-
-    db["settings"]["currency"] = parts[1].strip()
-    await save_database()
-    await message.answer(
-        f"✅ Currency changed to {db['settings']['currency']}"
+    await log(
+        f"🛒 New Purchase\n"
+        f"User: {call.from_user.id}\n"
+        f"Product: {product[0]}"
     )
 
 
+@dp.callback_query(F.data=="topup")
+async def topup(call:CallbackQuery):
 
-@dp.callback_query(F.data == "admin_emojis")
-async def callback_admin_emojis(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-
-    await callback.message.edit_text(
-        "😺 Premium Emoji Manager\n\n"
-        "Add emoji:\n"
-        "/emoji_add name emoji_id\n\n"
-        "Example:\n"
-        "/emoji_add cat 5796185041717433060",
-        reply_markup=back_admin_keyboard()
+    await call.message.edit_text(
+        "💰 Binance Pay Top Up\n\n"
+        "Send payment screenshot to admin.\n"
+        "Admin will verify and add balance.",
+        reply_markup=main_menu()
     )
-    await callback.answer()
 
 
-@dp.message(Command("emoji_add"))
-async def add_premium_emoji(message: Message):
-    if not is_admin(message.from_user.id):
-        return
+@dp.callback_query(F.data=="invite")
+async def invite(call:CallbackQuery):
 
-    try:
-        _, name, emoji_id = message.text.split(maxsplit=2)
+    me=await bot.get_me()
 
-        db.setdefault("premium_emojis", {})
-        db["premium_emojis"][name] = emoji_id
+    await call.message.edit_text(
+        f"🎁 Invite Centre\n\n"
+        f"https://t.me/{me.username}?start={call.from_user.id}\n\n"
+        "Every 10 referrals = $1",
+        reply_markup=main_menu()
+    )
 
-        await save_database()
 
-        await message.answer(
-            f"✅ Premium emoji saved\n\n"
-            f"Name: {name}\n"
-            f"ID: {emoji_id}"
-        )
+@dp.callback_query(F.data=="help")
+async def help_button(call:CallbackQuery):
 
-    except Exception:
-        await message.answer(
-            "❌ Format:\n"
-            "/emoji_add name emoji_id\n\n"
-            "Example:\n"
-            "/emoji_add cat 5796185041717433060"
-        )
+    await call.message.edit_text(
+        "🆘 Support\n\n@PANKAZXX_support",
+        reply_markup=main_menu()
+    )
+
+
+@dp.callback_query(F.data=="policy")
+async def policy(call:CallbackQuery):
+
+    await call.message.edit_text(
+        "📜 Policy\n\n"
+        "Use the service responsibly.",
+        reply_markup=main_menu()
+    )
+
+
+@dp.callback_query(F.data=="home")
+async def home(call:CallbackQuery):
+
+    await call.message.edit_text(
+        "📝 Welcome to Lama Bot!",
+        reply_markup=main_menu()
+    )
+
+
+# ---------- ADMIN ----------
 
 
 @dp.message(Command("admin"))
-async def command_admin(message: Message, state: FSMContext) -> None:
-    if not is_admin(message.from_user.id):
-        return
-    await state.clear()
-    await message.answer("👑 Admin Panel", reply_markup=admin_menu())
+async def admin(message:Message):
 
-
-@dp.callback_query(F.data == "admin_home")
-async def callback_admin_home(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
-        return
-    await state.clear()
-    await callback.message.edit_text("👑 Admin Panel", reply_markup=admin_menu())
-
-
-@dp.callback_query(F.data == "admin_dashboard")
-async def callback_admin_dashboard(callback: CallbackQuery) -> None:
-    if not is_admin(callback.from_user.id):
-        return
-
-    users = list(db["users"].values())
-    verified = sum(1 for user in users if user.get("verified"))
-    banned = sum(1 for user in users if user.get("banned"))
-    total_balance = sum(int(user.get("balance", 0)) for user in users)
-    total_stock = sum(len(product.get("stock_items", [])) for product in db["products"].values())
-
-    await callback.message.edit_text(
-        "📊 Statistics Dashboard\n\n"
-        f"👥 Total users: {len(users)}\n"
-        f"✅ Verified users: {verified}\n"
-        f"🚫 Banned users: {banned}\n"
-        f"📦 Products: {len(db['products'])}\n"
-        f"📚 Total stock items: {total_stock}\n"
-        f"🛒 Total sales: {db['settings']['total_sales']}\n"
-        f"💵 Total revenue: {currency_symbol()}{db['settings']['total_revenue']}\n"
-        f"💰 User wallet total: {currency_symbol()}{total_balance}",
-        reply_markup=back_admin_keyboard(),
-    )
-
-
-@dp.callback_query(F.data == "admin_users")
-async def callback_admin_users(callback: CallbackQuery) -> None:
-    if is_admin(callback.from_user.id):
-        await callback.message.edit_text("👥 User Management", reply_markup=admin_users_menu())
-
-
-@dp.callback_query(F.data == "admin_find_user")
-async def callback_find_user(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_user_lookup)
-    await callback.message.edit_text("Send the Telegram user ID.")
-
-
-@dp.message(AdminStates.waiting_user_lookup)
-async def process_find_user(message: Message, state: FSMContext) -> None:
-    if not is_admin(message.from_user.id):
-        return
-    uid = (message.text or "").strip()
-    user = get_user(uid)
-    await state.clear()
-
-    if not user:
-        await message.answer("❌ User not found.", reply_markup=back_admin_keyboard())
+    if not admin_check(message.from_user.id):
         return
 
     await message.answer(
-        f"👤 User Details\n\n"
-        f"ID: {uid}\n"
-        f"Name: {user.get('name')}\n"
-        f"Username: @{user.get('username') or 'none'}\n"
-        f"Balance: {currency_symbol()}{user.get('balance', 0)}\n"
-        f"Verified: {user.get('verified')}\n"
-        f"Banned: {user.get('banned')}\n"
-        f"Referrals: {len(user.get('referrals', []))}\n"
-        f"Active referrals: {len(user.get('active_referrals', []))}\n"
-        f"Orders: {len(user.get('orders', []))}",
-        reply_markup=back_admin_keyboard(),
+        "⚙ Admin Panel\n\n"
+        "/addproduct name price stock\n"
+        "/balance user amount\n"
+        "/stats\n"
+        "/broadcast text"
     )
 
 
-@dp.callback_query(F.data == "admin_ban")
-async def callback_ban_user(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_ban_user)
-    await callback.message.edit_text("Send the user ID to ban.")
+@dp.message(Command("addproduct"))
+async def addproduct(message:Message):
 
-
-@dp.message(AdminStates.waiting_ban_user)
-async def process_ban_user(message: Message, state: FSMContext) -> None:
-    uid = (message.text or "").strip()
-    user = get_user(uid)
-    await state.clear()
-    if not user:
-        await message.answer("❌ User not found.")
-        return
-    user["banned"] = True
-    await save_database()
-    await message.answer(f"🚫 User {uid} has been banned.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_unban")
-async def callback_unban_user(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_unban_user)
-    await callback.message.edit_text("Send the user ID to unban.")
-
-
-@dp.message(AdminStates.waiting_unban_user)
-async def process_unban_user(message: Message, state: FSMContext) -> None:
-    uid = (message.text or "").strip()
-    user = get_user(uid)
-    await state.clear()
-    if not user:
-        await message.answer("❌ User not found.")
-        return
-    user["banned"] = False
-    await save_database()
-    await message.answer(f"✅ User {uid} has been unbanned.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_balance")
-async def callback_admin_balance(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("💰 Balance Management", reply_markup=admin_balance_menu())
-
-
-@dp.callback_query(F.data == "admin_add_balance")
-async def callback_add_balance(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_add_balance)
-    await callback.message.edit_text("Send: USER_ID AMOUNT\nExample: 123456789 500")
-
-
-@dp.message(AdminStates.waiting_add_balance)
-async def process_add_balance(message: Message, state: FSMContext) -> None:
-    try:
-        uid, amount_text = (message.text or "").split(maxsplit=1)
-        amount = int(amount_text)
-        if amount <= 0:
-            raise ValueError
-        user = get_user(uid)
-        if not user:
-            raise KeyError
-    except (ValueError, KeyError):
-        await message.answer("❌ Invalid format or user. Send: USER_ID AMOUNT")
+    if not admin_check(message.from_user.id):
         return
 
-    user["balance"] += amount
-    add_transaction(uid, amount, "admin_add", f"Added by admin {ADMIN_ID}")
-    await save_database()
-    await state.clear()
-    await message.answer(f"✅ Added {currency_symbol()}{amount} to user {uid}.", reply_markup=back_admin_keyboard())
+    data=message.text.split(" ",3)
 
-
-@dp.callback_query(F.data == "admin_remove_balance")
-async def callback_remove_balance(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_remove_balance)
-    await callback.message.edit_text("Send: USER_ID AMOUNT\nExample: 123456789 100")
-
-
-@dp.message(AdminStates.waiting_remove_balance)
-async def process_remove_balance(message: Message, state: FSMContext) -> None:
-    try:
-        uid, amount_text = (message.text or "").split(maxsplit=1)
-        amount = int(amount_text)
-        if amount <= 0:
-            raise ValueError
-        user = get_user(uid)
-        if not user:
-            raise KeyError
-    except (ValueError, KeyError):
-        await message.answer("❌ Invalid format or user. Send: USER_ID AMOUNT")
-        return
-
-    removed = min(user["balance"], amount)
-    user["balance"] -= removed
-    add_transaction(uid, -removed, "admin_remove", f"Removed by admin {ADMIN_ID}")
-    await save_database()
-    await state.clear()
-    await message.answer(f"✅ Removed {currency_symbol()}{removed} from user {uid}.", reply_markup=back_admin_keyboard())
-
-
-# =========================================================
-# ADMIN PRODUCTS
-# =========================================================
-
-@dp.callback_query(F.data == "admin_products")
-async def callback_admin_products(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("📦 Product Management", reply_markup=admin_products_menu())
-
-
-@dp.callback_query(F.data == "admin_add_product")
-async def callback_add_product(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_product_name)
-    await callback.message.edit_text("Send the product name.")
-
-
-@dp.message(AdminStates.waiting_product_name)
-async def process_product_name(message: Message, state: FSMContext) -> None:
-    name = (message.text or "").strip()
-    if not name:
-        await message.answer("Send a valid name.")
-        return
-    await state.update_data(product_name=name)
-    await state.set_state(AdminStates.waiting_product_price)
-    await message.answer("Send the product price as a whole number.")
-
-
-@dp.message(AdminStates.waiting_product_price)
-async def process_product_price(message: Message, state: FSMContext) -> None:
-    try:
-        price = int((message.text or "").strip())
-        if price < 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Send a valid whole-number price.")
-        return
-    await state.update_data(product_price=price)
-    await state.set_state(AdminStates.waiting_product_items)
-    await message.answer(
-        "Send stock items, one item per line.\n\n"
-        "Example:\nemail1:password1\nemail2:password2"
-    )
-
-
-@dp.message(AdminStates.waiting_product_items)
-async def process_product_items(message: Message, state: FSMContext) -> None:
-    items = [line.strip() for line in (message.text or "").splitlines() if line.strip()]
-    data = await state.get_data()
-    name = data["product_name"]
-    price = data["product_price"]
-
-    product_id = str(int(time.time() * 1000))
-    db["products"][product_id] = {
-        "id": product_id,
-        "name": name,
-        "description": "Digital AI service product",
-        "price": price,
-        "icon_custom_emoji_id": "5796185041717433060",
-        "stock_items": items,
-        "created_at": now_iso(),
-    }
-    await save_database()
-    await state.clear()
-    await message.answer(
-        f"✅ Product created.\n\nName: {name}\nPrice: {currency_symbol()}{price}\nStock: {len(items)}",
-        reply_markup=back_admin_keyboard(),
-    )
-
-
-@dp.callback_query(F.data == "admin_view_products")
-async def callback_view_products(callback: CallbackQuery) -> None:
-    if not db["products"]:
-        await callback.message.edit_text("No products found.", reply_markup=back_admin_keyboard())
-        return
-
-    lines = ["📋 Products\n"]
-    for product_id, product in db["products"].items():
-        lines.append(
-            f"ID: {product_id}\n"
-            f"Name: {product['name']}\n"
-            f"Price: {currency_symbol()}{product['price']}\n"
-            f"Stock: {len(product['stock_items'])}"
+    if len(data)<4:
+        return await message.answer(
+            "/addproduct name price stock"
         )
-    text = "\n\n".join(lines)
-    for start in range(0, len(text), 3900):
-        await callback.message.edit_text(text[start:start + 3900], reply_markup=back_admin_keyboard())
 
-
-@dp.callback_query(F.data == "admin_delete_product")
-async def callback_delete_product(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_delete_product)
-    await callback.message.edit_text("Send the product ID to delete.")
-
-
-@dp.message(AdminStates.waiting_delete_product)
-async def process_delete_product(message: Message, state: FSMContext) -> None:
-    product_id = (message.text or "").strip()
-    await state.clear()
-    product = db["products"].pop(product_id, None)
-    if not product:
-        await message.answer("❌ Product not found.")
-        return
-    await save_database()
-    await message.answer(f"🗑 Deleted {product['name']}.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_edit_product")
-async def callback_edit_product(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_edit_product)
-    await callback.message.edit_text(
-        "Send:\nPRODUCT_ID | NEW_PRICE | STOCK_ITEMS\n\n"
-        "Separate stock items with semicolons.\n"
-        "Example:\n123456 | 299 | account1;account2"
+    cur.execute(
+        "INSERT INTO products(name,price,stock) VALUES(?,?,?)",
+        (data[1],float(data[2]),data[3])
     )
 
+    db.commit()
 
-@dp.message(AdminStates.waiting_edit_product)
-async def process_edit_product(message: Message, state: FSMContext) -> None:
-    try:
-        product_id, price_text, stock_text = [part.strip() for part in (message.text or "").split("|", 2)]
-        product = db["products"][product_id]
-        price = int(price_text)
-        items = [item.strip() for item in stock_text.split(";") if item.strip()]
-    except (ValueError, KeyError):
-        await message.answer("❌ Invalid format or product ID.")
+    await message.answer("✅ Product added")
+
+
+@dp.message(Command("balance"))
+async def balance(message:Message):
+
+    if not admin_check(message.from_user.id):
         return
 
-    product["price"] = price
-    product["stock_items"].extend(items)
-    await save_database()
-    await state.clear()
-    await message.answer(
-        f"✅ Product updated.\nNew price: {currency_symbol()}{price}\nAdded stock: {len(items)}",
-        reply_markup=back_admin_keyboard(),
+    data=message.text.split()
+
+    cur.execute(
+        "UPDATE users SET balance=balance+? WHERE id=?",
+        (float(data[2]),int(data[1]))
     )
 
+    db.commit()
 
-# =========================================================
-# ADMIN BROADCAST
-# =========================================================
+    await message.answer("✅ Balance updated")
 
-@dp.callback_query(F.data == "admin_broadcast")
-async def callback_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_broadcast)
-    await callback.message.edit_text(
-        "📢 Send the message, photo, video, document, or other content to broadcast.\n"
-        "Use /cancel to stop."
-    )
 
+@dp.message(Command("stats"))
+async def stats(message:Message):
 
-@dp.message(Command("cancel"))
-async def command_cancel(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    if is_admin(message.from_user.id):
-        await message.answer("Cancelled.", reply_markup=admin_menu())
-    else:
-        await message.answer("Cancelled.", reply_markup=main_menu())
+    if admin_check(message.from_user.id):
 
+        users=cur.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
 
-@dp.message(AdminStates.waiting_broadcast)
-async def process_broadcast(message: Message, state: FSMContext) -> None:
-    if not is_admin(message.from_user.id):
-        return
+        products=cur.execute(
+            "SELECT COUNT(*) FROM products"
+        ).fetchone()[0]
 
-    user_ids = list(db["users"].keys())
-    progress = await message.answer(f"📤 Broadcasting to {len(user_ids)} users...")
+        await message.answer(
+            f"📊 Stats\nUsers: {users}\nProducts: {products}"
+        )
 
-    sent = 0
-    failed = 0
 
-    for index, uid in enumerate(user_ids, start=1):
-        try:
-            await bot.copy_message(
-                chat_id=int(uid),
-                from_chat_id=message.chat.id,
-                message_id=message.message_id,
-            )
-            sent += 1
-        except Exception:
-            failed += 1
-
-        if index % 25 == 0:
-            try:
-                await progress.edit_text(
-                    f"📤 Broadcast progress\n\n"
-                    f"Processed: {index}/{len(user_ids)}\n"
-                    f"Sent: {sent}\n"
-                    f"Failed: {failed}"
-                )
-            except Exception:
-                pass
-        await asyncio.sleep(0.04)
-
-    await state.clear()
-    await progress.edit_text(
-        f"✅ Broadcast finished\n\n"
-        f"Sent: {sent}\n"
-        f"Failed: {failed}",
-        reply_markup=back_admin_keyboard(),
-    )
-
-
-# =========================================================
-# ADMIN COUPONS / REDEEM CODES
-# =========================================================
-
-@dp.callback_query(F.data == "admin_coupons")
-async def callback_admin_coupons(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("🎟 Coupon Management", reply_markup=admin_coupons_menu())
-
-
-@dp.callback_query(F.data == "admin_create_coupon")
-async def callback_create_coupon(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_coupon)
-    await callback.message.edit_text("Send: CODE AMOUNT USES\nExample: WELCOME50 50 100")
-
-
-@dp.message(AdminStates.waiting_coupon)
-async def process_create_coupon(message: Message, state: FSMContext) -> None:
-    try:
-        code, amount_text, uses_text = (message.text or "").split(maxsplit=2)
-        amount = int(amount_text)
-        uses = int(uses_text)
-        if amount <= 0 or uses <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Send: CODE AMOUNT USES")
-        return
-
-    code = code.upper()
-    db["coupons"][code] = {
-        "amount": amount,
-        "uses_left": uses,
-        "active": True,
-        "created_at": now_iso(),
-    }
-    await save_database()
-    await state.clear()
-    await message.answer(f"✅ Coupon {code} created.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_view_coupons")
-async def callback_view_coupons(callback: CallbackQuery) -> None:
-    if not db["coupons"]:
-        await callback.message.edit_text("No coupons found.", reply_markup=back_admin_keyboard())
-        return
-    text = "🎟 Coupons\n\n" + "\n".join(
-        f"{code}: {currency_symbol()}{item['amount']} | Uses left: {item['uses_left']}"
-        for code, item in db["coupons"].items()
-    )
-    await callback.message.edit_text(text[:4000], reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_codes")
-async def callback_admin_codes(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("🎁 Redeem Code Management", reply_markup=admin_codes_menu())
-
-
-@dp.callback_query(F.data == "admin_create_code")
-async def callback_create_code(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_redeem_code)
-    await callback.message.edit_text("Send: CODE AMOUNT USES\nExample: GIFT100 100 10")
-
-
-@dp.message(AdminStates.waiting_redeem_code)
-async def process_create_code(message: Message, state: FSMContext) -> None:
-    try:
-        code, amount_text, uses_text = (message.text or "").split(maxsplit=2)
-        amount = int(amount_text)
-        uses = int(uses_text)
-        if amount <= 0 or uses <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("❌ Send: CODE AMOUNT USES")
-        return
-
-    code = code.upper()
-    db["redeem_codes"][code] = {
-        "amount": amount,
-        "uses_left": uses,
-        "active": True,
-        "created_at": now_iso(),
-    }
-    await save_database()
-    await state.clear()
-    await message.answer(f"✅ Redeem code {code} created.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_view_codes")
-async def callback_view_codes(callback: CallbackQuery) -> None:
-    if not db["redeem_codes"]:
-        await callback.message.edit_text("No redeem codes found.", reply_markup=back_admin_keyboard())
-        return
-    text = "🎁 Redeem Codes\n\n" + "\n".join(
-        f"{code}: {currency_symbol()}{item['amount']} | Uses left: {item['uses_left']}"
-        for code, item in db["redeem_codes"].items()
-    )
-    await callback.message.edit_text(text[:4000], reply_markup=back_admin_keyboard())
-
-
-# =========================================================
-# ADMIN SETTINGS / BACKUP / RESTORE
-# =========================================================
-
-@dp.callback_query(F.data == "admin_settings")
-async def callback_admin_settings(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("⚙ Bot Settings", reply_markup=admin_settings_menu())
-
-
-@dp.callback_query(F.data == "admin_ref_reward")
-async def callback_ref_reward(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_referral_reward)
-    await callback.message.edit_text("Send the new referral reward amount.")
-
-
-@dp.message(AdminStates.waiting_referral_reward)
-async def process_ref_reward(message: Message, state: FSMContext) -> None:
-    try:
-        amount = int((message.text or "").strip())
-        if amount < 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Send a valid whole number.")
-        return
-    db["settings"]["referral_reward"] = amount
-    await save_database()
-    await state.clear()
-    await message.answer(f"✅ Referral reward changed to {currency_symbol()}{amount}.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_min_refs")
-async def callback_min_refs(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_min_referrals)
-    await callback.message.edit_text("Send the minimum active referrals required to buy.")
-
-
-@dp.message(AdminStates.waiting_min_referrals)
-async def process_min_refs(message: Message, state: FSMContext) -> None:
-    try:
-        amount = int((message.text or "").strip())
-        if amount < 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Send a valid whole number.")
-        return
-    db["settings"]["min_active_referrals"] = amount
-    await save_database()
-    await state.clear()
-    await message.answer(f"✅ Minimum active referrals changed to {amount}.", reply_markup=back_admin_keyboard())
-
-
-@dp.callback_query(F.data == "admin_toggle_maintenance")
-async def callback_toggle_maintenance(callback: CallbackQuery) -> None:
-    db["settings"]["maintenance"] = not db["settings"]["maintenance"]
-    await save_database()
-    status = "enabled" if db["settings"]["maintenance"] else "disabled"
-    await callback.message.edit_text(f"🛠 Maintenance mode {status}.", reply_markup=admin_settings_menu())
-
-
-@dp.callback_query(F.data == "admin_backup")
-async def callback_backup(callback: CallbackQuery) -> None:
-    await save_database()
-    shutil.copy2(DATABASE_FILE, BACKUP_FILE)
-    await callback.message.answer_document(
-        FSInputFile(BACKUP_FILE),
-        caption="💾 Database backup",
-        reply_markup=back_admin_keyboard(),
-    )
-
-
-@dp.callback_query(F.data == "admin_restore")
-async def callback_restore(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AdminStates.waiting_restore_file)
-    await callback.message.edit_text("♻ Send a valid database JSON backup file.")
-
-
-@dp.message(AdminStates.waiting_restore_file, F.document)
-async def process_restore(message: Message, state: FSMContext) -> None:
-    global db
-
-    document = message.document
-    if not document.file_name.lower().endswith(".json"):
-        await message.answer("❌ Send a .json file.")
-        return
-
-    temporary_path = "restore_upload.json"
-    await bot.download(document, destination=temporary_path)
-
-    try:
-        with open(temporary_path, "r", encoding="utf-8") as file:
-            restored = json.load(file)
-        required = {"users", "products", "orders", "coupons", "redeem_codes", "transactions", "settings"}
-        if not required.issubset(restored.keys()):
-            raise ValueError("Invalid structure")
-    except (OSError, json.JSONDecodeError, ValueError):
-        await message.answer("❌ Invalid backup file.")
-        if os.path.exists(temporary_path):
-            os.remove(temporary_path)
-        return
-
-    shutil.copy2(DATABASE_FILE, BACKUP_FILE) if os.path.exists(DATABASE_FILE) else None
-    db = restored
-    await save_database()
-
-    if os.path.exists(temporary_path):
-        os.remove(temporary_path)
-
-    await state.clear()
-    await message.answer("✅ Database restored successfully.", reply_markup=admin_menu())
-
-
-# =========================================================
-# STOCK GROUP FORWARDING
-# =========================================================
-
-@dp.message(F.chat.id == STOCK_GROUP_ID)
-async def forward_stock_group_message(message: Message) -> None:
-    if STOCK_GROUP_ID == 0:
-        return
-
-    sent = 0
-    for uid, user in db["users"].items():
-        if not user.get("verified") or user.get("banned"):
-            continue
-        try:
-            await bot.copy_message(
-                chat_id=int(uid),
-                from_chat_id=message.chat.id,
-                message_id=message.message_id,
-            )
-            sent += 1
-        except Exception:
-            pass
-        await asyncio.sleep(0.04)
-
-    try:
-        await bot.send_message(ADMIN_ID, f"📦 Stock update forwarded to {sent} users.")
-    except Exception:
-        pass
-
-
-# =========================================================
-# FALLBACK
-# =========================================================
-
-@dp.message()
-async def fallback(message: Message) -> None:
-    ensure_user(message.from_user)
-    await save_database()
-
-    if not await user_access_message(message):
-        return
-
-    await message.answer("Use the buttons below.", reply_markup=main_menu())
-
-
-# =========================================================
-# STARTUP
-# =========================================================
-
-
-
-# =========================================================
-# RENDER FREE WEB SERVICE HEALTH CHECK
-# =========================================================
-
-async def health_check(request):
-    return web.Response(text="Bot is running")
-
-
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", health_check)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-
-async def main() -> None:
-    await save_database()
-    await start_web_server()
-    print("PankazXX AI Store Bot is running...")
+async def main():
     await dp.start_polling(bot)
 
 
-if __name__ == "__main__":
+if __name__=="__main__":
     asyncio.run(main())
-
-def parse_tg_emoji(text: str):
-    import re
-    entities = []
-
-    pattern = r"<tg-emoji\s+emoji-id=['\"](\d+)['\"]>(.*?)</tg-emoji>"
-
-    for match in re.finditer(pattern, text):
-        emoji_id = match.group(1)
-        emoji = match.group(2)
-
-        entities.append(
-            MessageEntity(
-                type="custom_emoji",
-                offset=match.start(),
-                length=len(emoji),
-                custom_emoji_id=emoji_id
-            )
-        )
-
-    clean_text = re.sub(pattern, r"\2", text)
-    return clean_text, entities
