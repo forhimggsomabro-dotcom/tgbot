@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import time
 from aiohttp import web
@@ -18,6 +19,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    MessageEntity,
 )
 
 # =========================================================
@@ -172,6 +174,30 @@ def add_transaction(user_id: int | str, amount: int, transaction_type: str, note
     if len(db["transactions"]) > 5000:
         db["transactions"] = db["transactions"][-5000:]
 
+
+
+
+def build_custom_emoji_text(text: str):
+    entities = []
+
+    pattern = r"\{emoji:(.*?)\}"
+
+    for match in re.finditer(pattern, text):
+        name = match.group(1)
+        emoji_id = db.get("premium_emojis", {}).get(name)
+
+        if emoji_id:
+            entities.append(
+                MessageEntity(
+                    type="custom_emoji",
+                    offset=match.start(),
+                    length=2,
+                    custom_emoji_id=str(emoji_id),
+                )
+            )
+
+    clean_text = re.sub(pattern, "😺", text)
+    return clean_text, entities
 
 
 def currency_symbol() -> str:
@@ -512,7 +538,7 @@ async def callback_products(callback: CallbackQuery) -> None:
         rows.append(
             [
                 cb(
-                    f"🛒 {product['name']} — {currency_symbol()}{product['price']} ({len(product['stock_items'])} left)",
+                    f"🛒 {build_custom_emoji_text(product['name'])[0]} — {currency_symbol()}{product['price']} ({len(product['stock_items'])} left)",
                     f"product:{product_id}",
                 )
             ]
@@ -537,7 +563,7 @@ async def callback_product_details(callback: CallbackQuery) -> None:
         ]
     )
     await callback.message.edit_text(
-        f"📦 {product['name']}\n\n"
+        f"📦 {build_custom_emoji_text(product['name'])[0]}\n\n"
         f"📝 {product.get('description', 'Digital product')}\n"
         f"💵 Price: {currency_symbol()}{product['price']}\n"
         f"📊 Stock: {stock_count}",
