@@ -13,6 +13,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.enums import ParseMode
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -46,6 +47,13 @@ BACKUP_FILE = "database_backup.json"
 
 DEFAULT_REFERRAL_REWARD = 20
 DEFAULT_MIN_ACTIVE_REFERRALS = 1
+
+# =========================================================
+# PREMIUM EMOJI
+# =========================================================
+
+PREMIUM_STAR = "<tg-emoji emoji-id='5796185041717433060'>⭐</tg-emoji>"
+
 
 # =========================================================
 # DATABASE
@@ -282,7 +290,7 @@ def currency_symbol() -> str:
 if BOT_TOKEN == "PUT_YOUR_NEW_BOT_TOKEN_HERE":
     print("WARNING: Add your new bot token to BOT_TOKEN before running.")
 
-bot = Bot(BOT_TOKEN)
+bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
 
@@ -557,8 +565,13 @@ async def command_start(message: Message) -> None:
         await save_database()
 
     await message.answer(
-        f"👋 Welcome, {message.from_user.full_name}!\n\n"
-        "Choose an option below:",
+        f"{PREMIUM_STAR} <b>Welcome, {message.from_user.full_name}!</b>\n\n"
+        "🚀 Welcome to PankazXX AI Store\n\n"
+        "💎 Premium Digital Services\n"
+        "⚡ Fast Delivery\n"
+        "🔐 Secure & Reliable\n\n"
+        f"{PREMIUM_STAR} <b>Choose an option below:</b>",
+        parse_mode=ParseMode.HTML,
         reply_markup=main_menu(),
     )
 
