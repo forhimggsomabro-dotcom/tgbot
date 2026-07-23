@@ -34,8 +34,8 @@ GROUP_ID: str | int = "https://t.me/+IQ4_X5pUfXo1NzM1"
 # Set to 0 to disable forwarding.
 STOCK_GROUP_ID: int = 0
 
-CHANNEL_LINK = "https://t.me/PANKAZXX_SHOP"
-GROUP_LINK = "https://t.me/+nirvvTR1VXI2MWU1"
+CHANNEL_LINK = "https://t.me/your_channel"
+GROUP_LINK = "https://t.me/your_group"
 SUPPORT_LINK = "https://t.me/PANKAZXX_support"
 
 DATABASE_FILE = "database.json"
@@ -235,7 +235,6 @@ def force_join_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📢 Join Channel", url=CHANNEL_LINK)],
-            [InlineKeyboardButton(text="👥 Join Group", url=GROUP_LINK)],
             [cb("✅ Verify Membership", "verify_join")],
         ]
     )
@@ -339,9 +338,7 @@ async def member_is_joined(chat_id: str | int, user_id: int) -> bool:
 
 
 async def verify_membership(user_id: int) -> bool:
-    channel_ok = await member_is_joined(CHANNEL_ID, user_id)
-    group_ok = await member_is_joined(GROUP_ID, user_id)
-    return channel_ok and group_ok
+    return await member_is_joined(CHANNEL_ID, user_id)
 
 
 async def activate_referral(user_id: int) -> None:
@@ -388,7 +385,7 @@ async def user_access_message(message: Message) -> bool:
 
     if not await verify_membership(message.from_user.id):
         await message.answer(
-            "🔒 Join our channel and group to continue.",
+            "🔒 Join our channel to continue.",
             reply_markup=force_join_menu(),
         )
         return False
@@ -422,7 +419,7 @@ async def command_start(message: Message) -> None:
     if not await verify_membership(message.from_user.id):
         await message.answer(
             "✨ Welcome to PankazXX AI Store!\n\n"
-            "To unlock the bot, join both communities and then press Verify.",
+            "To unlock the bot, join the channel and then press Verify.",
             reply_markup=force_join_menu(),
         )
         return
@@ -449,7 +446,7 @@ async def callback_verify_join(callback: CallbackQuery) -> None:
             await save_database()
         await callback.message.answer("✅ Membership verified successfully.", reply_markup=main_menu())
     else:
-        await callback.answer("Join both the channel and group first.", show_alert=True)
+        await callback.answer("Join the channel first.", show_alert=True)
 
 
 @dp.callback_query(F.data == "back_main")
