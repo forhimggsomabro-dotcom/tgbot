@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -290,7 +291,12 @@ def currency_symbol() -> str:
 if BOT_TOKEN == "PUT_YOUR_NEW_BOT_TOKEN_HERE":
     print("WARNING: Add your new bot token to BOT_TOKEN before running.")
 
-bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+    BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML
+    )
+)
 dp = Dispatcher()
 
 
