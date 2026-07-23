@@ -34,7 +34,7 @@ GROUP_ID: str | int = "https://t.me/+IQ4_X5pUfXo1NzM1"
 # Set to 0 to disable forwarding.
 STOCK_GROUP_ID: int = 0
 
-CHANNEL_LINK = "https://t.me/your_channel"
+CHANNEL_LINK = "https://t.me/PANKAZXX_SHOP"
 GROUP_LINK = "https://t.me/your_group"
 SUPPORT_LINK = "https://t.me/PANKAZXX_support"
 
