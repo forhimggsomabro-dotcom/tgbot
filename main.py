@@ -24,7 +24,7 @@ from aiogram.types import (
 # CONFIGURATION
 # =========================================================
 
-BOT_TOKEN = "8650482928:AAHH9Zxx_auExJy1sPA1Ifta5Sxyr7rAV4M"
+BOT_TOKEN = "8650482928:AAE9Cx1pBiQ_R_hkl6u6ABf4otxp0L1E4G0"
 ADMIN_ID = 8133480591
 
 # Public usernames such as "@mychannel", or numeric IDs such as -1001234567890.
@@ -253,7 +253,8 @@ def admin_menu() -> InlineKeyboardMarkup:
             [cb("📊 Dashboard", "admin_dashboard"), cb("👥 Users", "admin_users")],
             [cb("📦 Products", "admin_products"), cb("💰 Balance", "admin_balance")],
             [cb("📢 Broadcast", "admin_broadcast"), cb("🎟 Coupons", "admin_coupons")],
-            [cb("🎁 Redeem Codes", "admin_codes"), cb("⚙ Settings", "admin_settings")],
+            [cb("🎁 Redeem Codes", "admin_codes"), cb("😺 Premium Emojis", "admin_emojis")],
+            [cb("⚙ Settings", "admin_settings")],
             [cb("💾 Backup", "admin_backup"), cb("♻ Restore", "admin_restore")],
             [cb("🏠 User Menu", "back_main")],
         ]
@@ -555,14 +556,6 @@ async def callback_buy_product(callback: CallbackQuery) -> None:
 
     if not product:
         await callback.answer("Product no longer exists.", show_alert=True)
-        return
-
-    minimum = int(db["settings"]["min_active_referrals"])
-    if len(user["active_referrals"]) < minimum:
-        await callback.answer(
-            f"You need at least {minimum} active referral(s) before buying.",
-            show_alert=True,
-        )
         return
 
     if not product["stock_items"]:
