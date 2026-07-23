@@ -24,7 +24,7 @@ from aiogram.types import (
 # CONFIGURATION
 # =========================================================
 
-BOT_TOKEN = "8650482928:AAE9Cx1pBiQ_R_hkl6u6ABf4otxp0L1E4G0"
+BOT_TOKEN = "8650482928:AAHH9Zxx_auExJy1sPA1Ifta5Sxyr7rAV4M"
 ADMIN_ID = 8133480591
 
 # Public usernames such as "@mychannel", or numeric IDs such as -1001234567890.
