@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import time
+from aiohttp import web
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1421,8 +1422,31 @@ async def fallback(message: Message) -> None:
 # STARTUP
 # =========================================================
 
+
+
+# =========================================================
+# RENDER FREE WEB SERVICE HEALTH CHECK
+# =========================================================
+
+async def health_check(request):
+    return web.Response(text="Bot is running")
+
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+
 async def main() -> None:
     await save_database()
+    await start_web_server()
     print("PankazXX AI Store Bot is running...")
     await dp.start_polling(bot)
 
