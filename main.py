@@ -54,6 +54,7 @@ DEFAULT_DB = {
     "orders": {},
     "coupons": {},
     "redeem_codes": {},
+    "premium_emojis": {},
     "transactions": [],
     "settings": {
         "referral_reward": DEFAULT_REFERRAL_REWARD,
@@ -737,6 +738,52 @@ async def change_currency(message: Message):
     await message.answer(
         f"✅ Currency changed to {db['settings']['currency']}"
     )
+
+
+
+@dp.callback_query(F.data == "admin_emojis")
+async def callback_admin_emojis(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+
+    await callback.message.edit_text(
+        "😺 Premium Emoji Manager\n\n"
+        "Add emoji:\n"
+        "/emoji_add name emoji_id\n\n"
+        "Example:\n"
+        "/emoji_add cat 5796185041717433060",
+        reply_markup=back_admin_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.message(Command("emoji_add"))
+async def add_premium_emoji(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        _, name, emoji_id = message.text.split(maxsplit=2)
+
+        db.setdefault("premium_emojis", {})
+        db["premium_emojis"][name] = emoji_id
+
+        await save_database()
+
+        await message.answer(
+            f"✅ Premium emoji saved\n\n"
+            f"Name: {name}\n"
+            f"ID: {emoji_id}"
+        )
+
+    except Exception:
+        await message.answer(
+            "❌ Format:\n"
+            "/emoji_add name emoji_id\n\n"
+            "Example:\n"
+            "/emoji_add cat 5796185041717433060"
+        )
+
 
 @dp.message(Command("admin"))
 async def command_admin(message: Message, state: FSMContext) -> None:
