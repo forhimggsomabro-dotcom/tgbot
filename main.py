@@ -444,7 +444,7 @@ async def callback_verify_join(callback: CallbackQuery) -> None:
             user["verified"] = True
             await activate_referral(callback.from_user.id)
             await save_database()
-        await callback.message.answer("✅ Membership verified successfully.", reply_markup=main_menu())
+        await callback.message.edit_text("✅ Membership verified successfully.", reply_markup=main_menu())
     else:
         await callback.answer("Join the channel first.", show_alert=True)
 
@@ -454,7 +454,11 @@ async def callback_main_menu(callback: CallbackQuery, state: FSMContext) -> None
     await state.clear()
     if not await user_access_message(callback.message):
         return
-    await callback.message.answer("🏠 Main Menu", reply_markup=main_menu())
+    await callback.message.edit_text(
+        "🏠 Welcome back!\n\nChoose an option:",
+        reply_markup=main_menu()
+    )
+    await callback.answer()
 
 
 @dp.callback_query(F.data == "user_wallet")
@@ -462,8 +466,8 @@ async def callback_wallet(callback: CallbackQuery) -> None:
     user = get_user(callback.from_user.id)
     if not user:
         return
-    await callback.message.answer(
-        f"💰 Wallet\n\n"
+    await callback.message.edit_text(
+        f"💰 Wallet\n"
         f"Available balance: ₹{user['balance']}\n"
         f"Active referrals: {len(user['active_referrals'])}\n"
         f"Total orders: {len(user['orders'])}",
@@ -479,7 +483,7 @@ async def callback_referral(callback: CallbackQuery) -> None:
     reward = db["settings"]["referral_reward"]
     minimum = db["settings"]["min_active_referrals"]
 
-    await callback.message.answer(
+    await callback.message.edit_text(
         f"👥 Refer & Earn\n\n"
         f"Your link:\n{link}\n\n"
         f"💸 Reward per active referral: ₹{reward}\n"
@@ -492,7 +496,7 @@ async def callback_referral(callback: CallbackQuery) -> None:
 @dp.callback_query(F.data == "user_products")
 async def callback_products(callback: CallbackQuery) -> None:
     if not db["products"]:
-        await callback.message.answer("📦 No products are available right now.", reply_markup=back_main_keyboard())
+        await callback.message.edit_text("📦 No products are available right now.", reply_markup=back_main_keyboard())
         return
 
     rows = []
@@ -506,7 +510,7 @@ async def callback_products(callback: CallbackQuery) -> None:
             ]
         )
     rows.append([cb("⬅ Main Menu", "back_main")])
-    await callback.message.answer("🛍 Available Products", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.message.edit_text("🛍 Products", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @dp.callback_query(F.data.startswith("product:"))
@@ -524,7 +528,7 @@ async def callback_product_details(callback: CallbackQuery) -> None:
             [cb("⬅ Products", "user_products")],
         ]
     )
-    await callback.message.answer(
+    await callback.message.edit_text(
         f"📦 {product['name']}\n\n"
         f"📝 {product.get('description', 'Digital product')}\n"
         f"💵 Price: ₹{product['price']}\n"
@@ -586,7 +590,7 @@ async def callback_buy_product(callback: CallbackQuery) -> None:
     add_transaction(callback.from_user.id, -price, "purchase", f"Purchased {product['name']}")
     await save_database()
 
-    await callback.message.answer(
+    await callback.message.edit_text(
         f"✅ Purchase Successful\n\n"
         f"📦 Product: {product['name']}\n"
         f"💵 Paid: ₹{price}\n\n"
@@ -615,10 +619,10 @@ async def callback_orders(callback: CallbackQuery) -> None:
     order_ids = user.get("orders", [])[-10:]
 
     if not order_ids:
-        await callback.message.answer("📜 You have no orders yet.", reply_markup=back_main_keyboard())
+        await callback.message.edit_text("📜 You have no orders yet.", reply_markup=back_main_keyboard())
         return
 
-    lines = ["📜 Your Recent Orders\n"]
+    lines = ["📜 Orders\n"]
     for order_id in reversed(order_ids):
         order = db["orders"].get(order_id)
         if order:
@@ -627,13 +631,13 @@ async def callback_orders(callback: CallbackQuery) -> None:
                 f"  ID: {order_id}\n"
                 f"  Date: {order['created_at']}"
             )
-    await callback.message.answer("\n\n".join(lines), reply_markup=back_main_keyboard())
+    await callback.message.edit_text("\n\n".join(lines), reply_markup=back_main_keyboard())
 
 
 @dp.callback_query(F.data == "user_coupon")
 async def callback_user_coupon(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserStates.waiting_coupon)
-    await callback.message.answer("🎟 Send the coupon code.")
+    await callback.message.edit_text("🎟 Send the coupon code.")
 
 
 @dp.message(UserStates.waiting_coupon)
@@ -672,7 +676,7 @@ async def process_user_coupon(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "user_redeem")
 async def callback_user_redeem(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserStates.waiting_redeem_code)
-    await callback.message.answer("🎁 Send your redeem code.")
+    await callback.message.edit_text("🎁 Send your redeem code.")
 
 
 @dp.message(UserStates.waiting_redeem_code)
@@ -725,7 +729,7 @@ async def callback_admin_home(callback: CallbackQuery, state: FSMContext) -> Non
     if not is_admin(callback.from_user.id):
         return
     await state.clear()
-    await callback.message.answer("👑 Admin Panel", reply_markup=admin_menu())
+    await callback.message.edit_text("👑 Admin Panel", reply_markup=admin_menu())
 
 
 @dp.callback_query(F.data == "admin_dashboard")
@@ -739,7 +743,7 @@ async def callback_admin_dashboard(callback: CallbackQuery) -> None:
     total_balance = sum(int(user.get("balance", 0)) for user in users)
     total_stock = sum(len(product.get("stock_items", [])) for product in db["products"].values())
 
-    await callback.message.answer(
+    await callback.message.edit_text(
         "📊 Statistics Dashboard\n\n"
         f"👥 Total users: {len(users)}\n"
         f"✅ Verified users: {verified}\n"
@@ -756,13 +760,13 @@ async def callback_admin_dashboard(callback: CallbackQuery) -> None:
 @dp.callback_query(F.data == "admin_users")
 async def callback_admin_users(callback: CallbackQuery) -> None:
     if is_admin(callback.from_user.id):
-        await callback.message.answer("👥 User Management", reply_markup=admin_users_menu())
+        await callback.message.edit_text("👥 User Management", reply_markup=admin_users_menu())
 
 
 @dp.callback_query(F.data == "admin_find_user")
 async def callback_find_user(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_user_lookup)
-    await callback.message.answer("Send the Telegram user ID.")
+    await callback.message.edit_text("Send the Telegram user ID.")
 
 
 @dp.message(AdminStates.waiting_user_lookup)
@@ -795,7 +799,7 @@ async def process_find_user(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_ban")
 async def callback_ban_user(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_ban_user)
-    await callback.message.answer("Send the user ID to ban.")
+    await callback.message.edit_text("Send the user ID to ban.")
 
 
 @dp.message(AdminStates.waiting_ban_user)
@@ -814,7 +818,7 @@ async def process_ban_user(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_unban")
 async def callback_unban_user(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_unban_user)
-    await callback.message.answer("Send the user ID to unban.")
+    await callback.message.edit_text("Send the user ID to unban.")
 
 
 @dp.message(AdminStates.waiting_unban_user)
@@ -832,13 +836,13 @@ async def process_unban_user(message: Message, state: FSMContext) -> None:
 
 @dp.callback_query(F.data == "admin_balance")
 async def callback_admin_balance(callback: CallbackQuery) -> None:
-    await callback.message.answer("💰 Balance Management", reply_markup=admin_balance_menu())
+    await callback.message.edit_text("💰 Balance Management", reply_markup=admin_balance_menu())
 
 
 @dp.callback_query(F.data == "admin_add_balance")
 async def callback_add_balance(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_add_balance)
-    await callback.message.answer("Send: USER_ID AMOUNT\nExample: 123456789 500")
+    await callback.message.edit_text("Send: USER_ID AMOUNT\nExample: 123456789 500")
 
 
 @dp.message(AdminStates.waiting_add_balance)
@@ -865,7 +869,7 @@ async def process_add_balance(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_remove_balance")
 async def callback_remove_balance(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_remove_balance)
-    await callback.message.answer("Send: USER_ID AMOUNT\nExample: 123456789 100")
+    await callback.message.edit_text("Send: USER_ID AMOUNT\nExample: 123456789 100")
 
 
 @dp.message(AdminStates.waiting_remove_balance)
@@ -896,13 +900,13 @@ async def process_remove_balance(message: Message, state: FSMContext) -> None:
 
 @dp.callback_query(F.data == "admin_products")
 async def callback_admin_products(callback: CallbackQuery) -> None:
-    await callback.message.answer("📦 Product Management", reply_markup=admin_products_menu())
+    await callback.message.edit_text("📦 Product Management", reply_markup=admin_products_menu())
 
 
 @dp.callback_query(F.data == "admin_add_product")
 async def callback_add_product(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_product_name)
-    await callback.message.answer("Send the product name.")
+    await callback.message.edit_text("Send the product name.")
 
 
 @dp.message(AdminStates.waiting_product_name)
@@ -960,7 +964,7 @@ async def process_product_items(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_view_products")
 async def callback_view_products(callback: CallbackQuery) -> None:
     if not db["products"]:
-        await callback.message.answer("No products found.", reply_markup=back_admin_keyboard())
+        await callback.message.edit_text("No products found.", reply_markup=back_admin_keyboard())
         return
 
     lines = ["📋 Products\n"]
@@ -973,13 +977,13 @@ async def callback_view_products(callback: CallbackQuery) -> None:
         )
     text = "\n\n".join(lines)
     for start in range(0, len(text), 3900):
-        await callback.message.answer(text[start:start + 3900], reply_markup=back_admin_keyboard())
+        await callback.message.edit_text(text[start:start + 3900], reply_markup=back_admin_keyboard())
 
 
 @dp.callback_query(F.data == "admin_delete_product")
 async def callback_delete_product(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_delete_product)
-    await callback.message.answer("Send the product ID to delete.")
+    await callback.message.edit_text("Send the product ID to delete.")
 
 
 @dp.message(AdminStates.waiting_delete_product)
@@ -997,7 +1001,7 @@ async def process_delete_product(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_edit_product")
 async def callback_edit_product(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_edit_product)
-    await callback.message.answer(
+    await callback.message.edit_text(
         "Send:\nPRODUCT_ID | NEW_PRICE | STOCK_ITEMS\n\n"
         "Separate stock items with semicolons.\n"
         "Example:\n123456 | 299 | account1;account2"
@@ -1032,7 +1036,7 @@ async def process_edit_product(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_broadcast")
 async def callback_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_broadcast)
-    await callback.message.answer(
+    await callback.message.edit_text(
         "📢 Send the message, photo, video, document, or other content to broadcast.\n"
         "Use /cancel to stop."
     )
@@ -1096,13 +1100,13 @@ async def process_broadcast(message: Message, state: FSMContext) -> None:
 
 @dp.callback_query(F.data == "admin_coupons")
 async def callback_admin_coupons(callback: CallbackQuery) -> None:
-    await callback.message.answer("🎟 Coupon Management", reply_markup=admin_coupons_menu())
+    await callback.message.edit_text("🎟 Coupon Management", reply_markup=admin_coupons_menu())
 
 
 @dp.callback_query(F.data == "admin_create_coupon")
 async def callback_create_coupon(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_coupon)
-    await callback.message.answer("Send: CODE AMOUNT USES\nExample: WELCOME50 50 100")
+    await callback.message.edit_text("Send: CODE AMOUNT USES\nExample: WELCOME50 50 100")
 
 
 @dp.message(AdminStates.waiting_coupon)
@@ -1132,24 +1136,24 @@ async def process_create_coupon(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_view_coupons")
 async def callback_view_coupons(callback: CallbackQuery) -> None:
     if not db["coupons"]:
-        await callback.message.answer("No coupons found.", reply_markup=back_admin_keyboard())
+        await callback.message.edit_text("No coupons found.", reply_markup=back_admin_keyboard())
         return
     text = "🎟 Coupons\n\n" + "\n".join(
         f"{code}: ₹{item['amount']} | Uses left: {item['uses_left']}"
         for code, item in db["coupons"].items()
     )
-    await callback.message.answer(text[:4000], reply_markup=back_admin_keyboard())
+    await callback.message.edit_text(text[:4000], reply_markup=back_admin_keyboard())
 
 
 @dp.callback_query(F.data == "admin_codes")
 async def callback_admin_codes(callback: CallbackQuery) -> None:
-    await callback.message.answer("🎁 Redeem Code Management", reply_markup=admin_codes_menu())
+    await callback.message.edit_text("🎁 Redeem Code Management", reply_markup=admin_codes_menu())
 
 
 @dp.callback_query(F.data == "admin_create_code")
 async def callback_create_code(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_redeem_code)
-    await callback.message.answer("Send: CODE AMOUNT USES\nExample: GIFT100 100 10")
+    await callback.message.edit_text("Send: CODE AMOUNT USES\nExample: GIFT100 100 10")
 
 
 @dp.message(AdminStates.waiting_redeem_code)
@@ -1179,13 +1183,13 @@ async def process_create_code(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_view_codes")
 async def callback_view_codes(callback: CallbackQuery) -> None:
     if not db["redeem_codes"]:
-        await callback.message.answer("No redeem codes found.", reply_markup=back_admin_keyboard())
+        await callback.message.edit_text("No redeem codes found.", reply_markup=back_admin_keyboard())
         return
     text = "🎁 Redeem Codes\n\n" + "\n".join(
         f"{code}: ₹{item['amount']} | Uses left: {item['uses_left']}"
         for code, item in db["redeem_codes"].items()
     )
-    await callback.message.answer(text[:4000], reply_markup=back_admin_keyboard())
+    await callback.message.edit_text(text[:4000], reply_markup=back_admin_keyboard())
 
 
 # =========================================================
@@ -1194,13 +1198,13 @@ async def callback_view_codes(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data == "admin_settings")
 async def callback_admin_settings(callback: CallbackQuery) -> None:
-    await callback.message.answer("⚙ Bot Settings", reply_markup=admin_settings_menu())
+    await callback.message.edit_text("⚙ Bot Settings", reply_markup=admin_settings_menu())
 
 
 @dp.callback_query(F.data == "admin_ref_reward")
 async def callback_ref_reward(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_referral_reward)
-    await callback.message.answer("Send the new referral reward amount.")
+    await callback.message.edit_text("Send the new referral reward amount.")
 
 
 @dp.message(AdminStates.waiting_referral_reward)
@@ -1221,7 +1225,7 @@ async def process_ref_reward(message: Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_min_refs")
 async def callback_min_refs(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_min_referrals)
-    await callback.message.answer("Send the minimum active referrals required to buy.")
+    await callback.message.edit_text("Send the minimum active referrals required to buy.")
 
 
 @dp.message(AdminStates.waiting_min_referrals)
@@ -1244,7 +1248,7 @@ async def callback_toggle_maintenance(callback: CallbackQuery) -> None:
     db["settings"]["maintenance"] = not db["settings"]["maintenance"]
     await save_database()
     status = "enabled" if db["settings"]["maintenance"] else "disabled"
-    await callback.message.answer(f"🛠 Maintenance mode {status}.", reply_markup=admin_settings_menu())
+    await callback.message.edit_text(f"🛠 Maintenance mode {status}.", reply_markup=admin_settings_menu())
 
 
 @dp.callback_query(F.data == "admin_backup")
@@ -1261,7 +1265,7 @@ async def callback_backup(callback: CallbackQuery) -> None:
 @dp.callback_query(F.data == "admin_restore")
 async def callback_restore(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminStates.waiting_restore_file)
-    await callback.message.answer("♻ Send a valid database JSON backup file.")
+    await callback.message.edit_text("♻ Send a valid database JSON backup file.")
 
 
 @dp.message(AdminStates.waiting_restore_file, F.document)
