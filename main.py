@@ -243,6 +243,35 @@ def get_product_emoji_entity(product: dict):
     ]
 
 
+
+
+def parse_tg_emoji_html(text: str):
+    """
+    Converts:
+    <tg-emoji emoji-id='123'>⭐</tg-emoji>
+    into Telegram custom emoji entities.
+    """
+    entities = []
+
+    pattern = r"<tg-emoji\s+emoji-id=['\"](.*?)['\"]>(.*?)</tg-emoji>"
+
+    for match in re.finditer(pattern, text):
+        emoji_id = match.group(1)
+        emoji = match.group(2)
+
+        entities.append(
+            MessageEntity(
+                type="custom_emoji",
+                offset=match.start(),
+                length=len(emoji),
+                custom_emoji_id=emoji_id
+            )
+        )
+
+    clean_text = re.sub(pattern, r"\2", text)
+    return clean_text, entities
+
+
 def currency_symbol() -> str:
     return db.get("settings", {}).get("currency", "₹")
 
@@ -627,15 +656,15 @@ async def callback_product_details(callback: CallbackQuery) -> None:
         ]
     )
     product_name = product["name"]
-    clean_name = build_custom_emoji_text(product_name)[0]
+    clean_name, tg_entities = parse_tg_emoji_html(product_name)
 
-    entities = []
-    if product.get("icon_custom_emoji_id"):
+    entities = tg_entities
+    if product.get("icon_custom_emoji_id") and not entities:
         entities.append(
             MessageEntity(
                 type="custom_emoji",
-                offset=3,
-                length=2,
+                offset=0,
+                length=1,
                 custom_emoji_id=str(product["icon_custom_emoji_id"])
             )
         )
@@ -1118,7 +1147,7 @@ async def process_product_items(message: Message, state: FSMContext) -> None:
         "name": name,
         "description": "Digital AI service product",
         "price": price,
-        "icon_custom_emoji_id": db.get("default_icon_custom_emoji_id", "5796185041717433060"),
+        "icon_custom_emoji_id": "5796185041717433060",
         "stock_items": items,
         "created_at": now_iso(),
     }
