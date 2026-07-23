@@ -54,7 +54,6 @@ DEFAULT_DB = {
     "orders": {},
     "coupons": {},
     "redeem_codes": {},
-    "premium_emojis": {},
     "transactions": [],
     "settings": {
         "referral_reward": DEFAULT_REFERRAL_REWARD,
@@ -62,6 +61,7 @@ DEFAULT_DB = {
         "total_sales": 0,
         "total_revenue": 0,
         "maintenance": False,
+        "currency": "₹",
     },
 }
 
@@ -172,21 +172,8 @@ def add_transaction(user_id: int | str, amount: int, transaction_type: str, note
 
 
 
-# =========================================================
-# PREMIUM EMOJI SUPPORT
-# =========================================================
-
-def save_premium_emoji(name: str, emoji_id: str):
-    db.setdefault("premium_emojis", {})
-    db["premium_emojis"][name] = str(emoji_id)
-
-
-def parse_premium_text(text: str):
-    """
-    Use format:
-    {emoji:name} Product Name
-    """
-    return text
+def currency_symbol() -> str:
+    return db.get("settings", {}).get("currency", "₹")
 
 # =========================================================
 # BOT INITIALIZATION
@@ -385,7 +372,7 @@ async def activate_referral(user_id: int) -> None:
         await bot.send_message(
             int(referrer_id),
             f"🎉 Your referral became active!\n\n"
-            f"💰 ₹{reward} was added to your wallet.",
+            f"💰 {currency_symbol()}{reward} was added to your wallet.",
         )
     except Exception:
         pass
@@ -486,7 +473,7 @@ async def callback_wallet(callback: CallbackQuery) -> None:
         return
     await callback.message.edit_text(
         f"💰 Wallet\n"
-        f"Available balance: ₹{user['balance']}\n"
+        f"Available balance: {currency_symbol()}{user['balance']}\n"
         f"Active referrals: {len(user['active_referrals'])}\n"
         f"Total orders: {len(user['orders'])}",
         reply_markup=back_main_keyboard(),
@@ -504,7 +491,7 @@ async def callback_referral(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         f"👥 Refer & Earn\n\n"
         f"Your link:\n{link}\n\n"
-        f"💸 Reward per active referral: ₹{reward}\n"
+        f"💸 Reward per active referral: {currency_symbol()}{reward}\n"
         f"✅ Active referrals: {len(user['active_referrals'])}\n"
         f"📌 Minimum active referrals required: {minimum}",
         reply_markup=back_main_keyboard(),
@@ -522,7 +509,7 @@ async def callback_products(callback: CallbackQuery) -> None:
         rows.append(
             [
                 cb(
-                    f"🛒 {product['name']} — ₹{product['price']} ({len(product['stock_items'])} left)",
+                    f"🛒 {product['name']} — {currency_symbol()}{product['price']} ({len(product['stock_items'])} left)",
                     f"product:{product_id}",
                 )
             ]
@@ -549,7 +536,7 @@ async def callback_product_details(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         f"📦 {product['name']}\n\n"
         f"📝 {product.get('description', 'Digital product')}\n"
-        f"💵 Price: ₹{product['price']}\n"
+        f"💵 Price: {currency_symbol()}{product['price']}\n"
         f"📊 Stock: {stock_count}",
         reply_markup=keyboard,
     )
@@ -583,7 +570,7 @@ async def callback_buy_product(callback: CallbackQuery) -> None:
     price = int(product["price"])
     if user["balance"] < price:
         await callback.answer(
-            f"Insufficient balance. You need ₹{price}.",
+            f"Insufficient balance. You need {currency_symbol()}{price}.",
             show_alert=True,
         )
         return
@@ -611,7 +598,7 @@ async def callback_buy_product(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         f"✅ Purchase Successful\n\n"
         f"📦 Product: {product['name']}\n"
-        f"💵 Paid: ₹{price}\n\n"
+        f"💵 Paid: {currency_symbol()}{price}\n\n"
         f"🔐 Your delivery:\n<code>{stock_item}</code>\n\n"
         "Keep this information private.",
         parse_mode="HTML",
@@ -625,7 +612,7 @@ async def callback_buy_product(callback: CallbackQuery) -> None:
             f"Order: {order_id}\n"
             f"User: {callback.from_user.id}\n"
             f"Product: {product['name']}\n"
-            f"Amount: ₹{price}",
+            f"Amount: {currency_symbol()}{price}",
         )
     except Exception:
         pass
@@ -645,7 +632,7 @@ async def callback_orders(callback: CallbackQuery) -> None:
         order = db["orders"].get(order_id)
         if order:
             lines.append(
-                f"• {order['product_name']} — ₹{order['price']}\n"
+                f"• {order['product_name']} — {currency_symbol()}{order['price']}\n"
                 f"  ID: {order_id}\n"
                 f"  Date: {order['created_at']}"
             )
@@ -688,7 +675,7 @@ async def process_user_coupon(message: Message, state: FSMContext) -> None:
     await save_database()
     await state.clear()
 
-    await message.answer(f"✅ Coupon applied. ₹{amount} added to your wallet.", reply_markup=main_menu())
+    await message.answer(f"✅ Coupon applied. {currency_symbol()}{amount} added to your wallet.", reply_markup=main_menu())
 
 
 @dp.callback_query(F.data == "user_redeem")
@@ -727,7 +714,7 @@ async def process_user_redeem(message: Message, state: FSMContext) -> None:
     await save_database()
     await state.clear()
 
-    await message.answer(f"✅ Code redeemed. ₹{amount} added to your wallet.", reply_markup=main_menu())
+    await message.answer(f"✅ Code redeemed. {currency_symbol()}{amount} added to your wallet.", reply_markup=main_menu())
 
 
 # =========================================================
@@ -735,22 +722,21 @@ async def process_user_redeem(message: Message, state: FSMContext) -> None:
 # =========================================================
 
 
-@dp.message(Command("emoji_add"))
-async def add_premium_emoji(message: Message):
+@dp.message(Command("currency"))
+async def change_currency(message: Message):
     if not is_admin(message.from_user.id):
         return
 
-    try:
-        name, emoji_id = (message.text or "").split(maxsplit=1)[1].split(maxsplit=1)
-        save_premium_emoji(name, emoji_id)
-        await save_database()
-        await message.answer(
-            f"✅ Premium emoji saved\n\n{name}: {emoji_id}"
-        )
-    except Exception:
-        await message.answer(
-            "Usage:\n/emoji_add name emoji_id\n\nExample:\n/emoji_add crown 5368324170671202286"
-        )
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: /currency ₹")
+        return
+
+    db["settings"]["currency"] = parts[1].strip()
+    await save_database()
+    await message.answer(
+        f"✅ Currency changed to {db['settings']['currency']}"
+    )
 
 @dp.message(Command("admin"))
 async def command_admin(message: Message, state: FSMContext) -> None:
@@ -787,8 +773,8 @@ async def callback_admin_dashboard(callback: CallbackQuery) -> None:
         f"📦 Products: {len(db['products'])}\n"
         f"📚 Total stock items: {total_stock}\n"
         f"🛒 Total sales: {db['settings']['total_sales']}\n"
-        f"💵 Total revenue: ₹{db['settings']['total_revenue']}\n"
-        f"💰 User wallet total: ₹{total_balance}",
+        f"💵 Total revenue: {currency_symbol()}{db['settings']['total_revenue']}\n"
+        f"💰 User wallet total: {currency_symbol()}{total_balance}",
         reply_markup=back_admin_keyboard(),
     )
 
@@ -822,7 +808,7 @@ async def process_find_user(message: Message, state: FSMContext) -> None:
         f"ID: {uid}\n"
         f"Name: {user.get('name')}\n"
         f"Username: @{user.get('username') or 'none'}\n"
-        f"Balance: ₹{user.get('balance', 0)}\n"
+        f"Balance: {currency_symbol()}{user.get('balance', 0)}\n"
         f"Verified: {user.get('verified')}\n"
         f"Banned: {user.get('banned')}\n"
         f"Referrals: {len(user.get('referrals', []))}\n"
@@ -899,7 +885,7 @@ async def process_add_balance(message: Message, state: FSMContext) -> None:
     add_transaction(uid, amount, "admin_add", f"Added by admin {ADMIN_ID}")
     await save_database()
     await state.clear()
-    await message.answer(f"✅ Added ₹{amount} to user {uid}.", reply_markup=back_admin_keyboard())
+    await message.answer(f"✅ Added {currency_symbol()}{amount} to user {uid}.", reply_markup=back_admin_keyboard())
 
 
 @dp.callback_query(F.data == "admin_remove_balance")
@@ -927,7 +913,7 @@ async def process_remove_balance(message: Message, state: FSMContext) -> None:
     add_transaction(uid, -removed, "admin_remove", f"Removed by admin {ADMIN_ID}")
     await save_database()
     await state.clear()
-    await message.answer(f"✅ Removed ₹{removed} from user {uid}.", reply_markup=back_admin_keyboard())
+    await message.answer(f"✅ Removed {currency_symbol()}{removed} from user {uid}.", reply_markup=back_admin_keyboard())
 
 
 # =========================================================
@@ -992,7 +978,7 @@ async def process_product_items(message: Message, state: FSMContext) -> None:
     await save_database()
     await state.clear()
     await message.answer(
-        f"✅ Product created.\n\nName: {name}\nPrice: ₹{price}\nStock: {len(items)}",
+        f"✅ Product created.\n\nName: {name}\nPrice: {currency_symbol()}{price}\nStock: {len(items)}",
         reply_markup=back_admin_keyboard(),
     )
 
@@ -1008,7 +994,7 @@ async def callback_view_products(callback: CallbackQuery) -> None:
         lines.append(
             f"ID: {product_id}\n"
             f"Name: {product['name']}\n"
-            f"Price: ₹{product['price']}\n"
+            f"Price: {currency_symbol()}{product['price']}\n"
             f"Stock: {len(product['stock_items'])}"
         )
     text = "\n\n".join(lines)
@@ -1060,7 +1046,7 @@ async def process_edit_product(message: Message, state: FSMContext) -> None:
     await save_database()
     await state.clear()
     await message.answer(
-        f"✅ Product updated.\nNew price: ₹{price}\nAdded stock: {len(items)}",
+        f"✅ Product updated.\nNew price: {currency_symbol()}{price}\nAdded stock: {len(items)}",
         reply_markup=back_admin_keyboard(),
     )
 
@@ -1175,7 +1161,7 @@ async def callback_view_coupons(callback: CallbackQuery) -> None:
         await callback.message.edit_text("No coupons found.", reply_markup=back_admin_keyboard())
         return
     text = "🎟 Coupons\n\n" + "\n".join(
-        f"{code}: ₹{item['amount']} | Uses left: {item['uses_left']}"
+        f"{code}: {currency_symbol()}{item['amount']} | Uses left: {item['uses_left']}"
         for code, item in db["coupons"].items()
     )
     await callback.message.edit_text(text[:4000], reply_markup=back_admin_keyboard())
@@ -1222,7 +1208,7 @@ async def callback_view_codes(callback: CallbackQuery) -> None:
         await callback.message.edit_text("No redeem codes found.", reply_markup=back_admin_keyboard())
         return
     text = "🎁 Redeem Codes\n\n" + "\n".join(
-        f"{code}: ₹{item['amount']} | Uses left: {item['uses_left']}"
+        f"{code}: {currency_symbol()}{item['amount']} | Uses left: {item['uses_left']}"
         for code, item in db["redeem_codes"].items()
     )
     await callback.message.edit_text(text[:4000], reply_markup=back_admin_keyboard())
@@ -1255,7 +1241,7 @@ async def process_ref_reward(message: Message, state: FSMContext) -> None:
     db["settings"]["referral_reward"] = amount
     await save_database()
     await state.clear()
-    await message.answer(f"✅ Referral reward changed to ₹{amount}.", reply_markup=back_admin_keyboard())
+    await message.answer(f"✅ Referral reward changed to {currency_symbol()}{amount}.", reply_markup=back_admin_keyboard())
 
 
 @dp.callback_query(F.data == "admin_min_refs")
