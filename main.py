@@ -202,6 +202,32 @@ def build_custom_emoji_text(text: str):
 
 
 
+
+def build_tg_emoji_html(text: str):
+    """
+    Supports product text like:
+    <tg-emoji emoji-id='5796185041717433060'>⭐</tg-emoji> Product Name
+    """
+    entities = []
+    pattern = r"<tg-emoji\s+emoji-id=['\"](.*?)['\"]>(.*?)</tg-emoji>"
+
+    for match in re.finditer(pattern, text):
+        emoji_id = match.group(1)
+        emoji = match.group(2)
+
+        entities.append(
+            MessageEntity(
+                type="custom_emoji",
+                offset=match.start(),
+                length=len(emoji),
+                custom_emoji_id=str(emoji_id),
+            )
+        )
+
+    clean = re.sub(pattern, r"\2", text)
+    return clean, entities
+
+
 def get_product_emoji_entity(product: dict):
     emoji_id = product.get("icon_custom_emoji_id")
     if not emoji_id:
