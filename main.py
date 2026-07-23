@@ -1,14 +1,20 @@
+"""
+Lama Bot Final - Render Compatible
+Aiogram 3.25
+
+Install:
+pip install aiogram==3.25.0 aiohttp aiosqlite python-dotenv
+
+Set BOT_TOKEN before running.
+"""
+
 import asyncio
+import os
 import sqlite3
-import time
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
-)
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 BOT_TOKEN = "8650482928:AAF7d_gV7M81D3ZKVdhmoESDo8w424wjYG8"
 
@@ -19,7 +25,7 @@ UPDATE_GROUP = "@lama_updates"
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
 
-db = sqlite3.connect("lama_store.db")
+db = sqlite3.connect("lama.db")
 cur = db.cursor()
 
 cur.executescript("""
@@ -41,28 +47,14 @@ CREATE TABLE IF NOT EXISTS orders(
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  user INTEGER,
  product TEXT,
- item TEXT,
- time INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS payments(
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- user INTEGER,
- amount REAL,
- status TEXT
-);
-
-CREATE TABLE IF NOT EXISTS codes(
- code TEXT PRIMARY KEY,
- amount REAL
+ item TEXT
 );
 """)
 
 db.commit()
 
-cooldown = {}
 
-def main_menu():
+def menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🛒 Products", callback_data="products"),
@@ -81,130 +73,96 @@ def main_menu():
         ]
     ])
 
-def admin_check(uid):
-    return uid == ADMIN_ID
 
-
-async def log(text):
+async def send_log(text):
     try:
         await bot.send_message(LOG_CHANNEL, text)
-    except:
+    except Exception:
         pass
 
 
 @dp.message(Command("start"))
 async def start(message: Message):
-
-    uid = message.from_user.id
-
-    cur.execute(
-        "INSERT OR IGNORE INTO users(id) VALUES(?)",
-        (uid,)
-    )
-
+    cur.execute("INSERT OR IGNORE INTO users(id) VALUES(?)",
+                (message.from_user.id,))
     db.commit()
 
     await message.answer(
         "📝 Welcome to Lama Bot!\n\n"
         "I'm here to help you purchase subscriptions and digital services easily and securely.",
-        reply_markup=main_menu()
+        reply_markup=menu()
     )
 
 
 @dp.callback_query(F.data == "profile")
 async def profile(call: CallbackQuery):
-
-    user = cur.execute(
+    data = cur.execute(
         "SELECT balance,refs FROM users WHERE id=?",
         (call.from_user.id,)
     ).fetchone()
 
     await call.message.edit_text(
-        f"👤 Profile\n\n"
-        f"💰 Balance: ${user[0]:.2f}\n"
-        f"🎁 Referrals: {user[1]}",
-        reply_markup=main_menu()
+        f"👤 Profile\n\n💰 Balance: ${data[0]:.2f}\n🎁 Referrals: {data[1]}",
+        reply_markup=menu()
     )
 
 
 @dp.callback_query(F.data == "products")
 async def products(call: CallbackQuery):
+    rows = cur.execute("SELECT id,name,price FROM products").fetchall()
 
-    rows = cur.execute(
-        "SELECT id,name,price FROM products"
-    ).fetchall()
+    buttons = [
+        [InlineKeyboardButton(
+            text=f"{x[1]} ${x[2]}",
+            callback_data=f"buy_{x[0]}"
+        )]
+        for x in rows
+    ]
 
-    buttons = []
-
-    for p in rows:
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{p[1]} - ${p[2]}",
-                callback_data=f"buy:{p[0]}"
-            )
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(
-            text="⬅ Back",
-            callback_data="home"
-        )
-    ])
+    buttons.append([InlineKeyboardButton(text="⬅ Back", callback_data="home")])
 
     await call.message.edit_text(
-        "🛒 Available Products",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=buttons
-        )
+        "🛒 Products",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
 
 
-@dp.callback_query(F.data.startswith("buy:"))
+@dp.callback_query(F.data.startswith("buy_"))
 async def buy(call: CallbackQuery):
+    pid = int(call.data.split("_")[1])
 
-    if call.from_user.id in cooldown:
-        if time.time()-cooldown[call.from_user.id] < 3:
-            return
-
-    cooldown[call.from_user.id]=time.time()
-
-    pid=int(call.data.split(":")[1])
-
-    product=cur.execute(
+    product = cur.execute(
         "SELECT name,price,stock FROM products WHERE id=?",
         (pid,)
     ).fetchone()
 
-    if not product:
-        return
-
-    if product[2]=="":
+    if not product or not product[2]:
         return await call.answer("Out of stock")
 
-    balance=cur.execute(
+    user = cur.execute(
         "SELECT balance FROM users WHERE id=?",
         (call.from_user.id,)
-    ).fetchone()[0]
+    ).fetchone()
 
-    if balance < product[1]:
+    if user[0] < product[1]:
         return await call.answer("Insufficient balance")
 
-    item=product[2].split("\n")[0]
-    remaining="\n".join(product[2].split("\n")[1:])
+    item = product[2].split("\n")[0]
+    left = "\n".join(product[2].split("\n")[1:])
 
     cur.execute(
         "UPDATE users SET balance=balance-? WHERE id=?",
-        (product[1],call.from_user.id)
+        (product[1], call.from_user.id)
     )
 
     cur.execute(
         "UPDATE products SET stock=? WHERE id=?",
-        (remaining,pid)
+        (left, pid)
     )
 
     cur.execute(
-        "INSERT INTO orders(user,product,item,time) VALUES(?,?,?,?)",
-        (call.from_user.id,product[0],item,int(time.time()))
+        "INSERT INTO orders(user,product,item) VALUES(?,?,?)",
+        (call.from_user.id, product[0], item)
     )
 
     db.commit()
@@ -212,148 +170,100 @@ async def buy(call: CallbackQuery):
     await call.message.answer(
         f"✅ Purchase Successful\n\n"
         f"📦 {product[0]}\n\n"
-        f"🔐 Your Details:\n{item}"
+        f"🔐 Account:\n{item}"
     )
 
-    await log(
-        f"🛒 New Purchase\n"
-        f"User: {call.from_user.id}\n"
-        f"Product: {product[0]}"
-    )
-
-
-@dp.callback_query(F.data=="topup")
-async def topup(call:CallbackQuery):
-
-    await call.message.edit_text(
-        "💰 Binance Pay Top Up\n\n"
-        "Send payment screenshot to admin.\n"
-        "Admin will verify and add balance.",
-        reply_markup=main_menu()
+    await send_log(
+        f"🛒 Purchase\nUser: {call.from_user.id}\nProduct: {product[0]}"
     )
 
 
-@dp.callback_query(F.data=="invite")
-async def invite(call:CallbackQuery):
-
-    me=await bot.get_me()
-
-    await call.message.edit_text(
-        f"🎁 Invite Centre\n\n"
-        f"https://t.me/{me.username}?start={call.from_user.id}\n\n"
-        "Every 10 referrals = $1",
-        reply_markup=main_menu()
-    )
-
-
-@dp.callback_query(F.data=="help")
-async def help_button(call:CallbackQuery):
-
-    await call.message.edit_text(
-        "🆘 Support\n\n@PANKAZXX_support",
-        reply_markup=main_menu()
-    )
-
-
-@dp.callback_query(F.data=="policy")
-async def policy(call:CallbackQuery):
-
-    await call.message.edit_text(
-        "📜 Policy\n\n"
-        "Use the service responsibly.",
-        reply_markup=main_menu()
-    )
-
-
-@dp.callback_query(F.data=="home")
-async def home(call:CallbackQuery):
-
-    await call.message.edit_text(
-        "📝 Welcome to Lama Bot!",
-        reply_markup=main_menu()
-    )
-
-
-# ---------- ADMIN ----------
+@dp.callback_query()
+async def buttons(call: CallbackQuery):
+    if call.data == "home":
+        await call.message.edit_text("📝 Welcome to Lama Bot!", reply_markup=menu())
+    elif call.data == "topup":
+        await call.message.edit_text(
+            "💰 Binance Pay Top Up\nSend payment proof to admin.",
+            reply_markup=menu()
+        )
+    elif call.data == "invite":
+        me = await bot.get_me()
+        await call.message.edit_text(
+            f"🎁 Invite:\nhttps://t.me/{me.username}?start={call.from_user.id}",
+            reply_markup=menu()
+        )
+    elif call.data == "help":
+        await call.message.edit_text("@PANKAZXX_support", reply_markup=menu())
 
 
 @dp.message(Command("admin"))
-async def admin(message:Message):
-
-    if not admin_check(message.from_user.id):
-        return
-
-    await message.answer(
-        "⚙ Admin Panel\n\n"
-        "/addproduct name price stock\n"
-        "/balance user amount\n"
-        "/stats\n"
-        "/broadcast text"
-    )
+async def admin(message: Message):
+    if message.from_user.id == ADMIN_ID:
+        await message.answer(
+            "⚙ Admin\n\n"
+            "/addproduct name price stock\n"
+            "/balance user amount\n"
+            "/stats"
+        )
 
 
 @dp.message(Command("addproduct"))
-async def addproduct(message:Message):
-
-    if not admin_check(message.from_user.id):
+async def add_product(message: Message):
+    if message.from_user.id != ADMIN_ID:
         return
 
-    data=message.text.split(" ",3)
+    data = message.text.split(" ", 3)
 
-    if len(data)<4:
+    if len(data) < 4:
         return await message.answer(
-            "/addproduct name price stock"
+            "/addproduct Netflix 5 email:pass"
         )
 
     cur.execute(
         "INSERT INTO products(name,price,stock) VALUES(?,?,?)",
-        (data[1],float(data[2]),data[3])
+        (data[1], float(data[2]), data[3])
     )
-
     db.commit()
 
     await message.answer("✅ Product added")
 
 
-@dp.message(Command("balance"))
-async def balance(message:Message):
-
-    if not admin_check(message.from_user.id):
-        return
-
-    data=message.text.split()
-
-    cur.execute(
-        "UPDATE users SET balance=balance+? WHERE id=?",
-        (float(data[2]),int(data[1]))
-    )
-
-    db.commit()
-
-    await message.answer("✅ Balance updated")
-
-
 @dp.message(Command("stats"))
-async def stats(message:Message):
-
-    if admin_check(message.from_user.id):
-
-        users=cur.execute(
-            "SELECT COUNT(*) FROM users"
-        ).fetchone()[0]
-
-        products=cur.execute(
-            "SELECT COUNT(*) FROM products"
-        ).fetchone()[0]
+async def stats(message: Message):
+    if message.from_user.id == ADMIN_ID:
+        users = cur.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        products = cur.execute("SELECT COUNT(*) FROM products").fetchone()[0]
 
         await message.answer(
-            f"📊 Stats\nUsers: {users}\nProducts: {products}"
+            f"📊 Users: {users}\n📦 Products: {products}"
         )
 
 
+async def health(request):
+    return web.Response(text="Lama Bot Running")
+
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        int(os.getenv("PORT", 10000))
+    )
+
+    await site.start()
+
+
 async def main():
+    await web_server()
     await dp.start_polling(bot)
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     asyncio.run(main())
