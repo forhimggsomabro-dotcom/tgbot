@@ -1581,3 +1581,25 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+def parse_tg_emoji(text: str):
+    import re
+    entities = []
+
+    pattern = r"<tg-emoji\s+emoji-id=['\"](\d+)['\"]>(.*?)</tg-emoji>"
+
+    for match in re.finditer(pattern, text):
+        emoji_id = match.group(1)
+        emoji = match.group(2)
+
+        entities.append(
+            MessageEntity(
+                type="custom_emoji",
+                offset=match.start(),
+                length=len(emoji),
+                custom_emoji_id=emoji_id
+            )
+        )
+
+    clean_text = re.sub(pattern, r"\2", text)
+    return clean_text, entities
