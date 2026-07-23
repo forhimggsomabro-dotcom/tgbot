@@ -1,5 +1,5 @@
-aiogram
-python-telegram-bot==21.6
+aiogram==3.25.0
+aiohttp
 requests
 pytz
 firebase-admin
