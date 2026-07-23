@@ -57,7 +57,7 @@ DEFAULT_DB = {
     "orders": {},
     "coupons": {},
     "redeem_codes": {},
-    "premium_emojis": {"chatgpt": "5796185041717433060"},
+    "premium_emojis": {},
     "transactions": [],
     "settings": {
         "referral_reward": DEFAULT_REFERRAL_REWARD,
@@ -200,31 +200,27 @@ def build_custom_emoji_text(text: str):
     return clean_text, entities
 
 
+
+
+def get_product_emoji_entity(product: dict):
+    emoji_id = product.get("icon_custom_emoji_id")
+    if not emoji_id:
+        return []
+
+    return [
+        MessageEntity(
+            type="custom_emoji",
+            offset=0,
+            length=2,
+            custom_emoji_id=str(emoji_id)
+        )
+    ]
+
+
 def currency_symbol() -> str:
     return db.get("settings", {}).get("currency", "₹")
 
 # =========================================================
-
-
-# =========================================================
-# DEFAULT PREMIUM PRODUCT
-# =========================================================
-
-DEFAULT_CHATGPT_PRODUCT = {
-    "id": "chatgpt_plus_1month",
-    "name": "{emoji:chatgpt} ChatGPT Plus 1 Month",
-    "description": "Premium AI access service",
-    "price": 399,
-    "stock_items": [],
-    "created_at": now_iso(),
-}
-
-
-def add_default_product():
-    if "chatgpt_plus_1month" not in db["products"]:
-        db["products"]["chatgpt_plus_1month"] = DEFAULT_CHATGPT_PRODUCT.copy()
-
-
 # BOT INITIALIZATION
 # =========================================================
 
@@ -453,6 +449,27 @@ async def user_access_message(message: Message) -> bool:
     return True
 
 
+
+
+async def send_product_with_custom_emoji(message, product_text, emoji_id):
+    entities = []
+
+    if emoji_id:
+        entities.append(
+            MessageEntity(
+                type="custom_emoji",
+                offset=0,
+                length=2,
+                custom_emoji_id=str(emoji_id)
+            )
+        )
+
+    await message.answer(
+        product_text,
+        entities=entities
+    )
+
+
 # =========================================================
 # USER COMMANDS
 # =========================================================
@@ -583,11 +600,26 @@ async def callback_product_details(callback: CallbackQuery) -> None:
             [cb("⬅ Products", "user_products")],
         ]
     )
+    product_name = product["name"]
+    clean_name = build_custom_emoji_text(product_name)[0]
+
+    entities = []
+    if product.get("icon_custom_emoji_id"):
+        entities.append(
+            MessageEntity(
+                type="custom_emoji",
+                offset=3,
+                length=2,
+                custom_emoji_id=str(product["icon_custom_emoji_id"])
+            )
+        )
+
     await callback.message.edit_text(
-        f"📦 {build_custom_emoji_text(product['name'])[0]}\n\n"
+        f"📦 {clean_name}\n\n"
         f"📝 {product.get('description', 'Digital product')}\n"
         f"💵 Price: {currency_symbol()}{product['price']}\n"
         f"📊 Stock: {stock_count}",
+        entities=entities,
         reply_markup=keyboard,
     )
 
@@ -826,39 +858,6 @@ async def add_premium_emoji(message: Message):
         )
 
 
-
-
-@dp.message(Command("stock_add"))
-async def add_stock_command(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-
-    parts = (message.text or "").split(maxsplit=1)
-
-    if len(parts) < 2:
-        await message.answer(
-            "Format:\n/stock_add account:password"
-        )
-        return
-
-    stock = parts[1].strip()
-
-    product = db["products"].get("chatgpt_plus_1month")
-
-    if not product:
-        await message.answer("Product not found.")
-        return
-
-    product["stock_items"].append(stock)
-    await save_database()
-
-    await message.answer(
-        f"✅ Stock added\n"
-        f"📦 ChatGPT Plus 1 Month\n"
-        f"Total stock: {len(product['stock_items'])}"
-    )
-
-
 @dp.message(Command("admin"))
 async def command_admin(message: Message, state: FSMContext) -> None:
     if not is_admin(message.from_user.id):
@@ -1093,6 +1092,7 @@ async def process_product_items(message: Message, state: FSMContext) -> None:
         "name": name,
         "description": "Digital AI service product",
         "price": price,
+        "icon_custom_emoji_id": db.get("default_icon_custom_emoji_id", "5796185041717433060"),
         "stock_items": items,
         "created_at": now_iso(),
     }
@@ -1518,7 +1518,6 @@ async def start_web_server():
 
 
 async def main() -> None:
-    add_default_product()
     await save_database()
     await start_web_server()
     print("PankazXX AI Store Bot is running...")
