@@ -34,7 +34,7 @@ GROUP_ID: str | int = "https://t.me/+IQ4_X5pUfXo1NzM1"
 # Set to 0 to disable forwarding.
 STOCK_GROUP_ID: int = 0
 
-CHANNEL_LINK = "https://t.me/PANKAZXX_SHOP"
+CHANNEL_LINK = "https://t.me/your_channel"
 GROUP_LINK = "https://t.me/your_group"
 SUPPORT_LINK = "https://t.me/PANKAZXX_support"
 
@@ -54,6 +54,7 @@ DEFAULT_DB = {
     "orders": {},
     "coupons": {},
     "redeem_codes": {},
+    "premium_emojis": {},
     "transactions": [],
     "settings": {
         "referral_reward": DEFAULT_REFERRAL_REWARD,
@@ -169,6 +170,23 @@ def add_transaction(user_id: int | str, amount: int, transaction_type: str, note
     if len(db["transactions"]) > 5000:
         db["transactions"] = db["transactions"][-5000:]
 
+
+
+# =========================================================
+# PREMIUM EMOJI SUPPORT
+# =========================================================
+
+def save_premium_emoji(name: str, emoji_id: str):
+    db.setdefault("premium_emojis", {})
+    db["premium_emojis"][name] = str(emoji_id)
+
+
+def parse_premium_text(text: str):
+    """
+    Use format:
+    {emoji:name} Product Name
+    """
+    return text
 
 # =========================================================
 # BOT INITIALIZATION
@@ -715,6 +733,24 @@ async def process_user_redeem(message: Message, state: FSMContext) -> None:
 # =========================================================
 # ADMIN PANEL
 # =========================================================
+
+
+@dp.message(Command("emoji_add"))
+async def add_premium_emoji(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        name, emoji_id = (message.text or "").split(maxsplit=1)[1].split(maxsplit=1)
+        save_premium_emoji(name, emoji_id)
+        await save_database()
+        await message.answer(
+            f"✅ Premium emoji saved\n\n{name}: {emoji_id}"
+        )
+    except Exception:
+        await message.answer(
+            "Usage:\n/emoji_add name emoji_id\n\nExample:\n/emoji_add crown 5368324170671202286"
+        )
 
 @dp.message(Command("admin"))
 async def command_admin(message: Message, state: FSMContext) -> None:
