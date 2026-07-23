@@ -10,7 +10,7 @@ from aiogram.types import (
     InlineKeyboardMarkup
 )
 
-BOT_TOKEN = "YOUR_NEW_TOKEN_HERE"
+BOT_TOKEN = "8650482928:AAF7d_gV7M81D3ZKVdhmoESDo8w424wjYG8"
 
 ADMIN_ID = 8133480591
 LOG_CHANNEL = "@PANKAZXX_SHOP"
